@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import {
   Trophy,
   Building2,
@@ -25,6 +25,13 @@ import {
   Search,
   Filter,
   RotateCcw,
+  Square,
+  CheckSquare,
+  Users,
+  Shield,
+  MinusSquare,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import Button from '@/components/ui/Button';
@@ -36,7 +43,7 @@ import {
   formatNumber,
   getFileTypeColor,
 } from '@/utils/format';
-import { getSourceDiskName, getDepartmentHead } from '@/utils/mock';
+import { getSourceDiskName, getDepartmentHead, getDepartments } from '@/utils/mock';
 import { exportDepartmentReports } from '@/utils/export';
 import type { DisposalHistoryEvent, RectificationItem, DepartmentReport } from '@/types';
 
@@ -83,6 +90,14 @@ export default function Reports() {
   const [rectificationStatusFilter, setRectificationStatusFilter] = useState<'all' | 'pending' | 'confirmed' | 'rejected'>('all');
   const [searchKeyword, setSearchKeyword] = useState('');
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
+
+  // 新增：负责人视角 & 批量操作
+  const [checklistViewMode, setChecklistViewMode] = useState<'admin' | 'owner'>('admin');
+  const [ownerDepartment, setOwnerDepartment] = useState<string>(getDepartments()[0]);
+  const [selectedItemIds, setSelectedItemIds] = useState<string[]>([]);
+  const [showBatchConfirmModal, setShowBatchConfirmModal] = useState(false);
+  const [showBatchRejectModal, setShowBatchRejectModal] = useState(false);
+  const [batchRejectReason, setBatchRejectReason] = useState('');
 
   useEffect(() => {
     fetchReports();
@@ -144,6 +159,27 @@ export default function Reports() {
     setSelectedRectification(null);
   };
 
+  // 批量确认
+  const handleBatchConfirm = () => {
+    if (selectedItemIds.length === 0) return;
+    selectedItemIds.forEach(id => {
+      confirmRectification(id, ownerDepartment + '负责人');
+    });
+    setSelectedItemIds([]);
+    setShowBatchConfirmModal(false);
+  };
+
+  // 批量驳回
+  const handleBatchReject = () => {
+    if (selectedItemIds.length === 0 || !batchRejectReason.trim()) return;
+    selectedItemIds.forEach(id => {
+      rejectRectification(id, batchRejectReason, ownerDepartment + '负责人');
+    });
+    setSelectedItemIds([]);
+    setBatchRejectReason('');
+    setShowBatchRejectModal(false);
+  };
+
   const openSendModal = (dept: DepartmentReport) => {
     const deptGroups = getDepartmentDuplicates(dept.name);
     const availableGroupIds = deptGroups
@@ -162,17 +198,63 @@ export default function Reports() {
   const totalDuplicateFileCount = reports.reduce((sum, r) => sum + r.fileCount, 0);
   const overallDuplicateRate = totalFileCount > 0 ? (totalDuplicateFileCount / totalFileCount) * 100 : 0;
 
-  const filteredRectificationItems = rectificationItems.filter(item => {
-    const matchStatus = rectificationStatusFilter === 'all' || item.status === rectificationStatusFilter;
-    const matchKeyword = !searchKeyword || 
-      item.department.toLowerCase().includes(searchKeyword.toLowerCase()) ||
-      item.files.some(f => f.name.toLowerCase().includes(searchKeyword.toLowerCase()));
-    return matchStatus && matchKeyword;
-  });
+  // 负责人视角下：强制只看本部门，默认只看待确认
+  const displayRectificationItems = useMemo(() => {
+    let items = rectificationItems;
+    if (checklistViewMode === 'owner') {
+      items = items.filter(r => r.department === ownerDepartment);
+      // 负责人视角默认只显示待确认
+      if (rectificationStatusFilter === 'all') {
+        items = items.filter(r => r.status === 'pending');
+      } else {
+        items = items.filter(r => r.status === rectificationStatusFilter);
+      }
+    } else {
+      items = items.filter(item => {
+        const matchStatus = rectificationStatusFilter === 'all' || item.status === rectificationStatusFilter;
+        return matchStatus;
+      });
+    }
+    // 关键词过滤
+    if (searchKeyword) {
+      items = items.filter(item =>
+        item.department.toLowerCase().includes(searchKeyword.toLowerCase()) ||
+        item.files.some(f => f.name.toLowerCase().includes(searchKeyword.toLowerCase()))
+      );
+    }
+    return items;
+  }, [rectificationItems, checklistViewMode, ownerDepartment, rectificationStatusFilter, searchKeyword]);
 
-  const pendingCount = rectificationItems.filter(r => r.status === 'pending').length;
-  const confirmedCount = rectificationItems.filter(r => r.status === 'confirmed').length;
-  const rejectedCount = rectificationItems.filter(r => r.status === 'rejected').length;
+  const filteredRectificationItems = displayRectificationItems;
+
+  // 负责人视角下的计数（只统计本部门）
+  const ownerScopedItems = useMemo(() => 
+    checklistViewMode === 'owner' 
+      ? rectificationItems.filter(r => r.department === ownerDepartment)
+      : rectificationItems
+  , [rectificationItems, checklistViewMode, ownerDepartment]);
+
+  const pendingCount = ownerScopedItems.filter(r => r.status === 'pending').length;
+  const confirmedCount = ownerScopedItems.filter(r => r.status === 'confirmed').length;
+  const rejectedCount = ownerScopedItems.filter(r => r.status === 'rejected').length;
+
+  // 批量选择辅助
+  const selectableItemIds = filteredRectificationItems
+    .filter(r => checklistViewMode === 'owner' ? r.status === 'pending' : r.status === 'pending')
+    .map(r => r.id);
+  const allSelected = selectableItemIds.length > 0 && selectableItemIds.every(id => selectedItemIds.includes(id));
+  const someSelected = selectableItemIds.some(id => selectedItemIds.includes(id)) && !allSelected;
+  const toggleSelectAll = () => {
+    if (allSelected) {
+      setSelectedItemIds([]);
+    } else {
+      setSelectedItemIds(selectableItemIds);
+    }
+  };
+  const toggleSelectOne = (id: string) => {
+    setSelectedItemIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+  };
+  const currentHead = getDepartmentHead(ownerDepartment);
 
   return (
     <div className="space-y-6">
@@ -726,8 +808,95 @@ export default function Reports() {
 
       {activeTab === 'checklist' && (
         <div className="space-y-4">
+          {/* 视角切换 + 部门选择 */}
           <div className="bg-white rounded-lg border border-gray-200 p-4">
-            <div className="flex flex-wrap items-center gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-4 mb-4">
+              <div className="flex items-center gap-3">
+                <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden bg-gray-50">
+                  <button
+                    className={`px-4 py-2 text-sm font-medium flex items-center gap-2 transition-colors ${
+                      checklistViewMode === 'admin'
+                        ? 'bg-white text-primary-700 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                    onClick={() => { setChecklistViewMode('admin'); setSelectedItemIds([]); }}
+                  >
+                    <Shield className="w-4 h-4" />
+                    管理视角
+                  </button>
+                  <button
+                    className={`px-4 py-2 text-sm font-medium flex items-center gap-2 transition-colors ${
+                      checklistViewMode === 'owner'
+                        ? 'bg-white text-primary-700 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                    onClick={() => { setChecklistViewMode('owner'); setSelectedItemIds([]); setRectificationStatusFilter('all'); }}
+                  >
+                    <Users className="w-4 h-4" />
+                    部门负责人视角
+                  </button>
+                </div>
+                {checklistViewMode === 'owner' && (
+                  <div className="bg-primary-50 border border-primary-200 rounded-lg px-4 py-2 flex items-center gap-3">
+                    <div className="w-9 h-9 bg-white rounded-full flex items-center justify-center border border-primary-200 text-primary-700 font-semibold">
+                      {currentHead.name.slice(0, 1)}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="pr-3 border-r border-primary-200">
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs text-primary-600">所属部门：</label>
+                          <select
+                            value={ownerDepartment}
+                            onChange={(e) => { setOwnerDepartment(e.target.value); setSelectedItemIds([]); }}
+                            className="w-36 px-2 py-1.5 border border-primary-300 bg-white rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                          >
+                            {getDepartments().map(d => <option key={d} value={d}>{d}</option>)}
+                          </select>
+                        </div>
+                        <p className="text-xs text-primary-500 mt-0.5">
+                          负责人：<strong>{currentHead.name}</strong> · {currentHead.email}
+                        </p>
+                      </div>
+                      <Badge variant="warning" size="sm">
+                        本部门待确认 {pendingCount} 条
+                      </Badge>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* 批量操作工具栏（仅负责人视角且有选中时显示） */}
+              {checklistViewMode === 'owner' && selectedItemIds.length > 0 && (
+                <div className="flex items-center gap-2 bg-warning-50 border border-warning-200 rounded-lg px-4 py-2">
+                  <span className="text-sm text-warning-800">
+                    已选 <strong>{formatNumber(selectedItemIds.length)}</strong> 条待确认清单
+                  </span>
+                  <Button
+                    variant="success"
+                    size="sm"
+                    icon={<ThumbsUp className="w-4 h-4" />}
+                    onClick={() => setShowBatchConfirmModal(true)}
+                  >
+                    批量确认
+                  </Button>
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    icon={<ThumbsDown className="w-4 h-4" />}
+                    onClick={() => setShowBatchRejectModal(true)}
+                  >
+                    批量驳回
+                  </Button>
+                  <button
+                    className="text-sm text-gray-500 hover:text-gray-700 px-2"
+                    onClick={() => setSelectedItemIds([])}
+                  >
+                    取消选择
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-4 pt-3 border-t border-gray-100">
               <div className="flex items-center gap-2">
                 <Filter className="w-4 h-4 text-gray-400" />
                 <div className="flex items-center gap-1">
@@ -739,7 +908,7 @@ export default function Reports() {
                     }`}
                     onClick={() => setRectificationStatusFilter('all')}
                   >
-                    全部
+                    {checklistViewMode === 'owner' ? '默认(待确认)' : '全部'}
                   </button>
                   <button
                     className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
@@ -781,7 +950,7 @@ export default function Reports() {
                   <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
-                    placeholder="搜索部门或文件名..."
+                    placeholder={checklistViewMode === 'owner' ? '搜索文件名...' : '搜索部门或文件名...'}
                     className="w-full pl-9 pr-4 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
                     value={searchKeyword}
                     onChange={(e) => setSearchKeyword(e.target.value)}
@@ -796,6 +965,24 @@ export default function Reports() {
               <table className="w-full">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
+                    {checklistViewMode === 'owner' && (
+                      <th className="px-4 py-3 text-left w-12">
+                        <button
+                          onClick={toggleSelectAll}
+                          className="text-gray-500 hover:text-primary-600 transition-colors disabled:opacity-40"
+                          disabled={selectableItemIds.length === 0}
+                          title="全选本页待确认清单"
+                        >
+                          {allSelected ? (
+                            <CheckSquare className="w-5 h-5 text-primary-600" />
+                          ) : someSelected ? (
+                            <MinusSquare className="w-5 h-5 text-primary-600" />
+                          ) : (
+                            <Square className="w-5 h-5" />
+                          )}
+                        </button>
+                      </th>
+                    )}
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                       状态
                     </th>
@@ -829,10 +1016,37 @@ export default function Reports() {
                   {filteredRectificationItems.map((item) => {
                     const statusConfig = rectificationStatusConfig[item.status];
                     const head = getDepartmentHead(item.department);
+                    const canSelect = item.status === 'pending';
+                    const isSelected = selectedItemIds.includes(item.id);
                     return (
-                      <tr key={item.id} className="hover:bg-gray-50">
+                      <tr key={item.id} className={`hover:bg-gray-50 ${isSelected ? 'bg-primary-50' : ''}`}>
+                        {checklistViewMode === 'owner' && (
+                          <td className="px-4 py-3">
+                            {canSelect ? (
+                              <button
+                                onClick={() => toggleSelectOne(item.id)}
+                                className="text-gray-500 hover:text-primary-600 transition-colors"
+                              >
+                                {isSelected ? (
+                                  <CheckSquare className="w-5 h-5 text-primary-600" />
+                                ) : (
+                                  <Square className="w-5 h-5" />
+                                )}
+                              </button>
+                            ) : (
+                              <span className="text-gray-300">
+                                <Square className="w-5 h-5 opacity-30" />
+                              </span>
+                            )}
+                          </td>
+                        )}
                         <td className="px-4 py-3">
                           <Badge variant={statusConfig.variant}>{statusConfig.label}</Badge>
+                          {item.rejectReason && (
+                            <p className="text-xs text-danger-600 mt-1 max-w-[220px] truncate" title={item.rejectReason}>
+                              驳回原因：{item.rejectReason}
+                            </p>
+                          )}
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-2">
@@ -917,13 +1131,18 @@ export default function Reports() {
               <div className="py-16 text-center">
                 <ListChecks className="w-16 h-16 text-gray-300 mx-auto mb-4" />
                 <p className="text-gray-500">
-                  {searchKeyword || rectificationStatusFilter !== 'all'
+                  {searchKeyword || rectificationStatusFilter !== (checklistViewMode === 'owner' ? 'all' : 'all')
                     ? '没有找到匹配的整改清单'
-                    : '暂无整改清单'
+                    : checklistViewMode === 'owner'
+                      ? `${ownerDepartment}暂无待确认的整改清单，干得漂亮！`
+                      : '暂无整改清单'
                   }
                 </p>
                 <p className="text-sm text-gray-400 mt-1">
-                  从部门排行榜中点击"发送整改清单"可向各部门分发
+                  {checklistViewMode === 'owner'
+                    ? '如有疑问请联系管理员核对'
+                    : '从部门排行榜中点击"发送整改清单"可向各部门分发'
+                  }
                 </p>
               </div>
             )}
@@ -1113,6 +1332,132 @@ export default function Reports() {
               icon={<XCircle className="w-4 h-4" />}
             >
               确认驳回
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* 批量确认 Modal */}
+      <Modal
+        isOpen={showBatchConfirmModal}
+        onClose={() => setShowBatchConfirmModal(false)}
+        title="批量确认整改清单"
+        size="md"
+      >
+        <div className="space-y-4">
+          <div className="bg-success-50 border border-success-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <ThumbsUp className="w-5 h-5 text-success-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium text-success-800">批量确认整改清单</p>
+                <p className="text-sm text-success-700 mt-1">
+                  即将确认以下整改清单，请仔细核对后再执行。确认后相关文件将视为部门已承诺清理。
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">所属部门</span>
+              <Badge variant="default" size="sm">{ownerDepartment}</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">确认数量</span>
+              <span className="font-semibold text-success-700 font-mono">{formatNumber(selectedItemIds.length)} 条</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">涉及文件数</span>
+              <span className="font-mono text-gray-700">
+                {formatNumber(
+                  filteredRectificationItems
+                    .filter(r => selectedItemIds.includes(r.id))
+                    .reduce((s, r) => s + r.fileCount, 0)
+                )} 个
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">预计节省空间</span>
+              <span className="font-mono text-success-700 font-semibold">
+                {formatFileSize(
+                  filteredRectificationItems
+                    .filter(r => selectedItemIds.includes(r.id))
+                    .reduce((s, r) => s + r.saveableSize, 0)
+                )}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setShowBatchConfirmModal(false)}>
+              取消
+            </Button>
+            <Button
+              variant="success"
+              onClick={handleBatchConfirm}
+              icon={<ThumbsUp className="w-4 h-4" />}
+            >
+              确认并处理 {formatNumber(selectedItemIds.length)} 条
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* 批量驳回 Modal */}
+      <Modal
+        isOpen={showBatchRejectModal}
+        onClose={() => setShowBatchRejectModal(false)}
+        title="批量驳回整改清单"
+        size="md"
+      >
+        <div className="space-y-4">
+          <div className="bg-danger-50 border border-danger-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <ThumbsDown className="w-5 h-5 text-danger-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium text-danger-800">批量驳回整改清单</p>
+                <p className="text-sm text-danger-700 mt-1">
+                  请填写统一驳回原因，管理员将根据该原因重新核对文件清单。
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">所属部门</span>
+              <Badge variant="default" size="sm">{ownerDepartment}</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">驳回数量</span>
+              <span className="font-semibold text-danger-700 font-mono">{formatNumber(selectedItemIds.length)} 条</span>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              驳回原因 <span className="text-danger-600">*</span>
+            </label>
+            <textarea
+              className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-danger-500 focus:border-danger-500 resize-none"
+              rows={5}
+              value={batchRejectReason}
+              onChange={(e) => setBatchRejectReason(e.target.value)}
+              placeholder="请详细说明驳回原因，例如：文件仍在使用中、清单有误、需要进一步核对、部分文件已自行清理等..."
+            />
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="secondary" onClick={() => setShowBatchRejectModal(false)}>
+              取消
+            </Button>
+            <Button
+              variant="danger"
+              onClick={handleBatchReject}
+              disabled={!batchRejectReason.trim()}
+              icon={<ThumbsDown className="w-4 h-4" />}
+            >
+              确认驳回 {formatNumber(selectedItemIds.length)} 条
             </Button>
           </div>
         </div>

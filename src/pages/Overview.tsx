@@ -20,6 +20,13 @@ import {
   Send,
   ThumbsUp,
   ThumbsDown,
+  Database,
+  History,
+  Search,
+  Folder,
+  Check,
+  StopCircle,
+  AlertCircle,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import StatCard from '@/components/ui/StatCard';
@@ -27,9 +34,9 @@ import Button from '@/components/ui/Button';
 import Badge from '@/components/ui/Badge';
 import TrendChart from '@/components/charts/TrendChart';
 import DonutChart from '@/components/charts/DonutChart';
-import { formatFileSize, formatRelativeTime, formatNumber } from '@/utils/format';
+import { formatFileSize, formatRelativeTime, formatNumber, formatDateTime } from '@/utils/format';
 import { getDiskTypes } from '@/utils/mock';
-import type { ActivityType, DiskType } from '@/types';
+import type { ActivityType, DiskType, ScanTask } from '@/types';
 
 const activityIcons: Record<ActivityType, any> = {
   scan: Scan,
@@ -64,12 +71,20 @@ const activityLabels: Record<ActivityType, string> = {
   reject_rectification: '已驳回',
 };
 
+const scanStatusConfig: Record<ScanTask['status'], { variant: any; label: string; color: string; icon: any }> = {
+  running: { variant: 'info' as const, label: '扫描中', color: 'bg-info-500', icon: RefreshCw },
+  completed: { variant: 'success' as const, label: '已完成', color: 'bg-success-500', icon: Check },
+  failed: { variant: 'danger' as const, label: '失败', color: 'bg-danger-500', icon: AlertCircle },
+  stopped: { variant: 'warning' as const, label: '已停止', color: 'bg-warning-500', icon: StopCircle },
+};
+
 export default function Overview() {
   const {
     overview,
     activities,
     loading,
     currentScan,
+    scanHistory,
     fetchOverview,
     fetchActivities,
     startScan,
@@ -289,6 +304,112 @@ export default function Overview() {
             })}
           </div>
         </div>
+      </div>
+
+      <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <History className="w-5 h-5 text-primary-600" />
+            扫描历史记录
+          </h3>
+          <p className="text-sm text-gray-500 mt-1">
+            查看各次扫描任务的执行情况、发现重复情况及新增待处理文件数
+          </p>
+        </div>
+          <Badge variant="info" size="sm">
+            共 {scanHistory.length} 条记录
+          </Badge>
+        </div>
+
+        {scanHistory.length === 0 ? (
+          <div className="text-center py-12 text-gray-500">
+            <Scan className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+            <p>暂无扫描记录</p>
+            <p className="text-sm mt-1">选择上方磁盘类型卡片开始扫描后即可查看记录</p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200">
+                  <th className="text-left py-3 px-4 font-medium text-gray-600 whitespace-nowrap">扫描来源</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-600 whitespace-nowrap">状态</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-600 whitespace-nowrap">扫描文件数</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-600 whitespace-nowrap">发现重复组数</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-600 whitespace-nowrap">发现重复文件</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-600 whitespace-nowrap">新增待处理</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-600 whitespace-nowrap">开始时间</th>
+                  <th className="text-left py-3 px-4 font-medium text-gray-600 whitespace-nowrap">操作人</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scanHistory.slice(0, 15).map((task) => {
+                  const cfg = scanStatusConfig[task.status];
+                  const StatusIcon = cfg.icon;
+                  return (
+                    <tr key={task.id} className="border-b border-gray-100 hover:bg-gray-50">
+                      <td className="py-3 px-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 bg-primary-100 text-primary-600 rounded flex items-center justify-center">
+                            {task.diskType === 'department' && <FolderTree className="w-4 h-4" />}
+                            {task.diskType === 'project' && <Briefcase className="w-4 h-4" />}
+                            {task.diskType === 'archive' && <Archive className="w-4 h-4" />}
+                          </div>
+                          <div>
+                            <p className="font-medium text-gray-900">{task.diskName}</p>
+                            {task.completedAt && (
+                              <p className="text-xs text-gray-500">
+                                用时 {Math.round((new Date(task.completedAt).getTime() - new Date(task.startedAt).getTime()) / 1000)} 秒
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-3 px-4">
+                        <Badge variant={cfg.variant} size="sm" className="inline-flex items-center gap-1">
+                          <StatusIcon className="w-3 h-3" />
+                          {cfg.label}
+                        </Badge>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="font-mono text-gray-700">
+                          {task.status === 'running'
+                            ? `${formatNumber(task.processedFiles)} / ${formatNumber(task.totalFiles)}`
+                            : formatNumber(task.totalFiles)}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className={`font-mono ${task.foundDuplicateGroups > 0 ? 'text-warning-600 font-semibold' : 'text-gray-700'}`}>
+                          {formatNumber(task.foundDuplicateGroups)}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="font-mono text-gray-700">
+                          {formatNumber(task.foundDuplicateFiles)}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className={`font-mono ${task.newPendingFiles > 0 ? 'text-danger-600 font-semibold' : 'text-gray-700'}`}>
+                          {formatNumber(task.newPendingFiles)}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="text-xs text-gray-600 font-mono">{formatDateTime(task.startedAt)}</span>
+                      </td>
+                      <td className="py-3 px-4">
+                        <span className="text-sm text-gray-700 flex items-center gap-1">
+                          <User className="w-3 h-3 text-gray-400" />
+                          {task.operator}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   );

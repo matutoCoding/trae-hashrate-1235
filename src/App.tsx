@@ -4,6 +4,7 @@ import Overview from "@/pages/Overview";
 import Duplicates from "@/pages/Duplicates";
 import Recycle from "@/pages/Recycle";
 import Reports from "@/pages/Reports";
+import Audit from "@/pages/Audit";
 import NotFound from "@/pages/NotFound";
 
 export default function App() {
@@ -15,6 +16,7 @@ export default function App() {
           <Route path="duplicates" element={<Duplicates />} />
           <Route path="recycle" element={<Recycle />} />
           <Route path="reports" element={<Reports />} />
+          <Route path="audit" element={<Audit />} />
           <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>

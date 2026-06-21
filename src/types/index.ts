@@ -208,5 +208,23 @@ export interface PersistentState {
   rectificationItems: RectificationItem[];
   totalFreedSpace: number;
   deptTotalFileCounts: Record<string, number>;
+  scanHistory: ScanTask[];
   initializedAt: string;
+}
+
+export type ScanTaskStatus = 'running' | 'completed' | 'failed' | 'stopped';
+
+export interface ScanTask {
+  id: string;
+  diskType: string;
+  diskName: string;
+  status: ScanTaskStatus;
+  startedAt: string;
+  completedAt?: string;
+  totalFiles: number;
+  processedFiles: number;
+  foundDuplicateGroups: number;
+  foundDuplicateFiles: number;
+  newPendingFiles: number;
+  operator: string;
 }

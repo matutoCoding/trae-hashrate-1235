@@ -14,6 +14,7 @@ import type {
   PersistentState,
   FileItem,
   RestoredItem,
+  ScanTask,
 } from '@/types';
 import {
   generateDuplicateGroups,
@@ -47,6 +48,7 @@ interface AppState {
   rectificationItems: RectificationItem[];
   totalFreedSpace: number;
   deptTotalFileCounts: Record<string, number>;
+  scanHistory: ScanTask[];
   loading: boolean;
   currentScan: ScanProgress | null;
   selectedFileIds: string[];
@@ -69,6 +71,8 @@ interface AppState {
 
   startScan: (diskType: string) => Promise<void>;
   stopScan: () => void;
+
+  addScanHistory: (task: ScanTask) => void;
 
   moveToRecycle: (fileIds: string[], reason: string) => Promise<void>;
   approveDeletion: (recycleItemIds: string[]) => Promise<void>;
@@ -123,6 +127,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   rectificationItems: [],
   totalFreedSpace: 0,
   deptTotalFileCounts: {},
+  scanHistory: [],
   loading: false,
   currentScan: null,
   selectedFileIds: [],
@@ -143,6 +148,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       rectificationItems: state.rectificationItems,
       totalFreedSpace: state.totalFreedSpace,
       deptTotalFileCounts: state.deptTotalFileCounts,
+      scanHistory: state.scanHistory,
       initializedAt: new Date().toISOString(),
     };
     try {
@@ -185,6 +191,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         rectificationItems: persistent.rectificationItems || [],
         totalFreedSpace: persistent.totalFreedSpace || 0,
         deptTotalFileCounts: persistent.deptTotalFileCounts || {},
+        scanHistory: persistent.scanHistory || [],
         reports,
         overview,
       });
@@ -210,6 +217,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       rectificationItems: [],
       totalFreedSpace: 0,
       deptTotalFileCounts: {},
+      scanHistory: [],
       reports: [],
       overview: null,
     });
@@ -274,6 +282,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       rectificationItems: [],
       totalFreedSpace: 0,
       deptTotalFileCounts: deptCounts,
+      scanHistory: [],
       activities,
       reports,
       overview,
@@ -363,8 +372,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   startScan: async (diskType: string) => {
     const disk = getDiskTypes().find(d => d.id === diskType);
     const totalFiles = Math.floor(Math.random() * 20000) + 10000;
+    const startedAt = new Date().toISOString();
+    const taskId = `scan-task-${Date.now()}`;
 
+    const pendingTask: ScanTask = {
+      id: taskId,
+      diskType,
+      diskName: disk?.name || diskType,
+      status: 'running',
+      startedAt,
+      totalFiles,
+      processedFiles: 0,
+      foundDuplicateGroups: 0,
+      foundDuplicateFiles: 0,
+      newPendingFiles: 0,
+      operator: CURRENT_OPERATOR,
+    };
     set({
+      scanHistory: [pendingTask, ...get().scanHistory],
       currentScan: {
         isScanning: true,
         diskType: disk?.name || diskType,
@@ -374,6 +399,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         percentage: 0,
       },
     });
+    get().saveToLocalStorage();
 
     const scanInterval = setInterval(() => {
       const current = get().currentScan;
@@ -404,7 +430,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (newProcessed >= current.totalFiles) {
         clearInterval(scanInterval);
         setTimeout(() => {
-          const { addActivity, allDuplicates, disposalHistory } = get();
+          const { addActivity, allDuplicates, disposalHistory, scanHistory } = get();
           
           resetRandomSeed();
           const scanSeedOffset = Date.now() % 100000;
@@ -435,14 +461,33 @@ export const useAppStore = create<AppState>((set, get) => ({
             });
           });
 
+          const foundDuplicateFiles = newGroups.reduce((s, g) => s + g.fileCount, 0);
+          const newPendingFiles = newGroups.reduce((s, g) => s + (g.fileCount - 1), 0);
+
           const updatedDuplicates = [...newGroups, ...allDuplicates].sort((a, b) => b.saveableSize - a.saveableSize);
           const updatedHistory = [...newHistory, ...disposalHistory];
+          const completedAt = new Date().toISOString();
+
+          const updatedScanHistory = scanHistory.map(t => 
+            t.id === taskId
+              ? {
+                  ...t,
+                  status: 'completed' as const,
+                  processedFiles: newProcessed,
+                  foundDuplicateGroups: newGroups.length,
+                  foundDuplicateFiles,
+                  newPendingFiles,
+                  completedAt,
+                }
+              : t
+          );
           
           set({ 
             allDuplicates: updatedDuplicates, 
             duplicates: updatedDuplicates, 
             currentScan: null,
             disposalHistory: updatedHistory,
+            scanHistory: updatedScanHistory,
           });
           get().recalculateDerivedData();
           addActivity('scan', `完成${disk?.name || diskType}扫描，新增重复文件 ${newGroups.length} 组`);
@@ -452,7 +497,30 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   stopScan: () => {
-    set({ currentScan: null });
+    const { currentScan, scanHistory } = get();
+    if (currentScan?.isScanning && scanHistory.length > 0) {
+      const updatedScanHistory = scanHistory.map((t, idx) => 
+        idx === 0 && t.status === 'running'
+          ? {
+              ...t,
+              status: 'stopped' as const,
+              processedFiles: currentScan.processedFiles,
+              completedAt: new Date().toISOString(),
+            }
+          : t
+      );
+      set({ currentScan: null, scanHistory: updatedScanHistory });
+      get().saveToLocalStorage();
+    } else {
+      set({ currentScan: null });
+    }
+  },
+
+  addScanHistory: (task: ScanTask) => {
+    set(state => ({
+      scanHistory: [task, ...state.scanHistory],
+    }));
+    get().saveToLocalStorage();
   },
 
   addDisposalHistory: (event: DisposalHistoryEvent) => {

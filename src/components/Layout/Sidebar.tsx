@@ -33,6 +33,12 @@ const menuItems = [
     label: '责任报告',
     description: '部门排行榜',
   },
+  {
+    path: '/audit',
+    icon: Shield,
+    label: '审计检索',
+    description: '处置链路追踪',
+  },
 ];
 
 export default function Sidebar() {
