@@ -9,6 +9,7 @@ export interface FileItem {
   createdBy: string;
   department: string;
   fileType: string;
+  sourceDisk: string;
 }
 
 export interface DuplicateGroup {
@@ -20,6 +21,7 @@ export interface DuplicateGroup {
   files: FileItem[];
   suggestedKeepId: string;
   department: string;
+  sourceDisk: string;
 }
 
 export interface RecycleItem {
@@ -39,6 +41,8 @@ export interface DepartmentReport {
   saveableSize: number;
   fileCount: number;
   rank: number;
+  pendingRecycleCount: number;
+  pendingRecycleSize: number;
 }
 
 export interface DailyTrend {
@@ -60,6 +64,8 @@ export interface OverviewStats {
   topDuplicateSource: string;
   trend: DailyTrend[];
   departmentDistribution: DepartmentDistribution[];
+  pendingRecycleCount: number;
+  pendingRecycleSize: number;
 }
 
 export type ActivityType = 'scan' | 'move' | 'approve' | 'reject' | 'delete';
@@ -96,4 +102,22 @@ export interface FilterOptions {
   minSize?: number;
   maxSize?: number;
   minDuplicates?: number;
+  sourceDisk?: string;
+}
+
+export interface BatchDisposalItem {
+  groupId: string;
+  fileIds: string[];
+}
+
+export interface BatchDisposalPlan {
+  id: string;
+  name: string;
+  createdAt: string;
+  items: BatchDisposalItem[];
+  totalFileCount: number;
+  totalSaveableSize: number;
+  departments: string[];
+  sourceDisks: string[];
+  status: 'draft' | 'confirmed' | 'executed';
 }

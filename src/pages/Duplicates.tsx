@@ -15,6 +15,9 @@ import {
   AlertCircle,
   Folder,
   X,
+  Database,
+  Layers,
+  ListChecks,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import Button from '@/components/ui/Button';
@@ -27,11 +30,9 @@ import {
   formatNumber,
   getFileTypeColor,
 } from '@/utils/format';
+import { getDepartments, getFileTypes, getSourceDiskName } from '@/utils/mock';
 import { exportDuplicateGroups } from '@/utils/export';
 import type { FilterOptions, FileItem } from '@/types';
-
-const departments = ['研发部', '市场部', '财务部', '人力资源部', '法务部', '行政部', '产品部', '运营部'];
-const fileTypes = ['pdf', 'docx', 'xlsx', 'pptx', 'jpg', 'png', 'mp4', 'zip'];
 
 export default function Duplicates() {
   const {
@@ -40,6 +41,7 @@ export default function Duplicates() {
     selectedFileIds,
     expandedGroupIds,
     filters,
+    batchPlan,
     fetchDuplicates,
     toggleFileSelection,
     clearFileSelection,
@@ -48,11 +50,27 @@ export default function Duplicates() {
     setFilters,
     clearFilters,
     moveToRecycle,
+    createBatchPlan,
+    addToBatchPlan,
+    removeFromBatchPlan,
+    clearBatchPlan,
+    executeBatchPlan,
   } = useAppStore();
 
   const [showMoveModal, setShowMoveModal] = useState(false);
   const [moveReason, setMoveReason] = useState('内容重复');
   const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [showBatchModal, setShowBatchModal] = useState(false);
+  const [batchReason, setBatchReason] = useState('内容重复');
+
+  const departments = getDepartments();
+  const fileTypes = getFileTypes();
+  const sourceDisks = [
+    { id: 'department', name: '部门盘' },
+    { id: 'project', name: '项目盘' },
+    { id: 'archive', name: '归档盘' },
+  ];
 
   useEffect(() => {
     fetchDuplicates();
@@ -90,6 +108,52 @@ export default function Duplicates() {
   const selectedFiles = getSelectedFiles();
   const totalSelectedSize = selectedFiles.reduce((sum, f) => sum + f.size, 0);
 
+  const isInBatchPlan = (groupId: string, fileId: string): boolean => {
+    if (!batchPlan) return false;
+    const item = batchPlan.items.find(i => i.groupId === groupId);
+    return item ? item.fileIds.includes(fileId) : false;
+  };
+
+  const handleBatchToggle = (groupId: string, fileIds: string[]) => {
+    if (!batchPlan) {
+      createBatchPlan();
+    }
+    
+    const allInBatch = fileIds.every(id => isInBatchPlan(groupId, id));
+    if (allInBatch) {
+      removeFromBatchPlan(groupId, fileIds);
+    } else {
+      addToBatchPlan(groupId, fileIds);
+    }
+  };
+
+  const handleFileBatchToggle = (groupId: string, fileId: string) => {
+    if (!batchPlan) {
+      createBatchPlan();
+    }
+    
+    if (isInBatchPlan(groupId, fileId)) {
+      removeFromBatchPlan(groupId, [fileId]);
+    } else {
+      addToBatchPlan(groupId, [fileId]);
+    }
+  };
+
+  const handleExecuteBatch = async () => {
+    if (!batchPlan || batchPlan.items.length === 0) return;
+    await executeBatchPlan(batchReason);
+    setShowBatchModal(false);
+    setBatchMode(false);
+    setBatchReason('内容重复');
+  };
+
+  const toggleBatchMode = () => {
+    if (batchMode) {
+      clearBatchPlan();
+    }
+    setBatchMode(!batchMode);
+  };
+
   if (loading && duplicates.length === 0) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -104,7 +168,7 @@ export default function Duplicates() {
         <div className="flex items-center gap-4">
           <div className="text-sm text-gray-600">
             共 <span className="font-semibold text-gray-900">{formatNumber(duplicates.length)}</span> 组重复文件
-            {selectedFileIds.length > 0 && (
+            {selectedFileIds.length > 0 && !batchMode && (
               <span className="ml-4">
                 已选择 <span className="font-semibold text-primary-600">{formatNumber(selectedFileIds.length)}</span> 个文件
                 <span className="text-gray-500">（{formatFileSize(totalSelectedSize)}）</span>
@@ -124,22 +188,72 @@ export default function Duplicates() {
           <Button
             variant="secondary"
             size="sm"
+            icon={<ListChecks className="w-4 h-4" />}
+            onClick={toggleBatchMode}
+            className={batchMode ? 'bg-primary-100 text-primary-700 border-primary-200' : ''}
+          >
+            {batchMode ? '退出批量模式' : '批量处置'}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
             icon={<Download className="w-4 h-4" />}
             onClick={() => exportDuplicateGroups(duplicates)}
           >
             导出
           </Button>
-          <Button
-            variant="warning"
-            size="sm"
-            icon={<Trash2 className="w-4 h-4" />}
-            disabled={selectedFileIds.length === 0}
-            onClick={() => setShowMoveModal(true)}
-          >
-            移入待回收区
-          </Button>
+          {!batchMode && (
+            <Button
+              variant="warning"
+              size="sm"
+              icon={<Trash2 className="w-4 h-4" />}
+              disabled={selectedFileIds.length === 0}
+              onClick={() => setShowMoveModal(true)}
+            >
+              移入待回收区
+            </Button>
+          )}
+          {batchMode && (
+            <Button
+              variant="warning"
+              size="sm"
+              icon={<Layers className="w-4 h-4" />}
+              disabled={!batchPlan || batchPlan.items.length === 0}
+              onClick={() => setShowBatchModal(true)}
+            >
+              生成处置方案
+            </Button>
+          )}
         </div>
       </div>
+
+      {batchMode && batchPlan && (
+        <div className="bg-primary-50 border border-primary-200 rounded-lg p-4 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center">
+              <Layers className="w-5 h-5 text-primary-600" />
+            </div>
+            <div>
+              <p className="font-medium text-primary-900">批量处置模式</p>
+              <p className="text-sm text-primary-700">
+                已选择 <span className="font-semibold">{formatNumber(batchPlan.totalFileCount)}</span> 个文件，
+                预计释放 <span className="font-semibold">{formatFileSize(batchPlan.totalSaveableSize)}</span> 空间
+                {batchPlan.departments.length > 0 && (
+                  <span className="ml-2">· 涉及 {batchPlan.departments.length} 个部门</span>
+                )}
+                {batchPlan.sourceDisks.length > 0 && (
+                  <span className="ml-2">· {batchPlan.sourceDisks.map(d => getSourceDiskName(d)).join('、')}</span>
+                )}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={clearBatchPlan}>
+              清空选择
+            </Button>
+          </div>
+        </div>
+      )}
 
       {showFilterPanel && (
         <div className="bg-white rounded-lg border border-gray-200 p-6 animate-slide-down">
@@ -152,7 +266,20 @@ export default function Duplicates() {
               <X className="w-5 h-5" />
             </button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">来源盘</label>
+              <select
+                className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+                value={filters.sourceDisk || ''}
+                onChange={(e) => setFilters({ sourceDisk: e.target.value || undefined })}
+              >
+                <option value="">全部来源</option>
+                {sourceDisks.map(disk => (
+                  <option key={disk.id} value={disk.id}>{disk.name}</option>
+                ))}
+              </select>
+            </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">部门</label>
               <select
@@ -219,7 +346,7 @@ export default function Duplicates() {
         </div>
       )}
 
-      {selectedFileIds.length > 0 && (
+      {selectedFileIds.length > 0 && !batchMode && (
         <div className="bg-warning-50 border border-warning-200 rounded-lg p-4 flex items-center justify-between">
           <div className="flex items-center gap-2 text-warning-700">
             <AlertCircle className="w-5 h-5" />
@@ -243,28 +370,33 @@ export default function Duplicates() {
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
                 <th className="px-4 py-3 text-left w-10">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                    checked={
-                      duplicates.length > 0 &&
-                      duplicates.every(g =>
-                        g.files.filter(f => f.id !== g.suggestedKeepId).every(f => selectedFileIds.includes(f.id))
-                      )
-                    }
-                    onChange={() => {
-                      const allNonKeepIds = duplicates.flatMap(g =>
-                        g.files.filter(f => f.id !== g.suggestedKeepId).map(f => f.id)
-                      );
-                      selectAllFiles(allNonKeepIds);
-                    }}
-                  />
+                  {!batchMode && (
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                      checked={
+                        duplicates.length > 0 &&
+                        duplicates.every(g =>
+                          g.files.filter(f => f.id !== g.suggestedKeepId).every(f => selectedFileIds.includes(f.id))
+                        )
+                      }
+                      onChange={() => {
+                        const allNonKeepIds = duplicates.flatMap(g =>
+                          g.files.filter(f => f.id !== g.suggestedKeepId).map(f => f.id)
+                        );
+                        selectAllFiles(allNonKeepIds);
+                      }}
+                    />
+                  )}
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   展开
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   哈希值
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  来源盘
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   所属部门
@@ -289,6 +421,8 @@ export default function Duplicates() {
                 const nonKeepFiles = group.files.filter(f => f.id !== group.suggestedKeepId);
                 const allNonKeepSelected = nonKeepFiles.every(f => selectedFileIds.includes(f.id));
                 const someNonKeepSelected = nonKeepFiles.some(f => selectedFileIds.includes(f.id));
+                const allInBatch = nonKeepFiles.every(f => isInBatchPlan(group.id, f.id));
+                const someInBatch = nonKeepFiles.some(f => isInBatchPlan(group.id, f.id));
 
                 return (
                   <>
@@ -297,7 +431,7 @@ export default function Duplicates() {
                       className="hover:bg-gray-50 transition-colors"
                     >
                       <td className="px-4 py-3">
-                        {nonKeepFiles.length > 0 && (
+                        {!batchMode && nonKeepFiles.length > 0 && (
                           <input
                             type="checkbox"
                             className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
@@ -306,6 +440,17 @@ export default function Duplicates() {
                               if (el) el.indeterminate = someNonKeepSelected && !allNonKeepSelected;
                             }}
                             onChange={() => selectAllFiles(nonKeepFiles.map(f => f.id))}
+                          />
+                        )}
+                        {batchMode && nonKeepFiles.length > 0 && (
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                            checked={allInBatch}
+                            ref={(el) => {
+                              if (el) el.indeterminate = someInBatch && !allInBatch;
+                            }}
+                            onChange={() => handleBatchToggle(group.id, nonKeepFiles.map(f => f.id))}
                           />
                         )}
                       </td>
@@ -328,6 +473,12 @@ export default function Duplicates() {
                       </td>
                       <td className="px-4 py-3">
                         <Badge variant="info" size="sm">
+                          <Database className="w-3 h-3 mr-1" />
+                          {getSourceDiskName(group.sourceDisk)}
+                        </Badge>
+                      </td>
+                      <td className="px-4 py-3">
+                        <Badge variant="default" size="sm">
                           <Folder className="w-3 h-3 mr-1" />
                           {group.department}
                         </Badge>
@@ -350,13 +501,13 @@ export default function Duplicates() {
                       <td className="px-4 py-3">
                         <Badge variant="success" size="sm">
                           <CheckCircle2 className="w-3 h-3 mr-1" />
-                          {group.files.find(f => f.id === group.suggestedKeepId)?.name.slice(0, 20)}...
+                          {group.files.find(f => f.id === group.suggestedKeepId)?.name.slice(0, 18)}...
                         </Badge>
                       </td>
                     </tr>
                     {isExpanded && (
                       <tr>
-                        <td colSpan={8} className="bg-gray-50 p-0">
+                        <td colSpan={9} className="bg-gray-50 p-0">
                           <div className="p-4 border-l-4 border-primary-500">
                             <table className="w-full">
                               <thead>
@@ -375,19 +526,28 @@ export default function Duplicates() {
                                 {group.files.map((file) => {
                                   const isKeep = file.id === group.suggestedKeepId;
                                   const isSelected = selectedFileIds.includes(file.id);
+                                  const inBatch = isInBatchPlan(group.id, file.id);
 
                                   return (
                                     <tr
                                       key={file.id}
-                                      className={`border-b border-gray-100 last:border-0 ${isSelected ? 'bg-warning-50' : ''} ${isKeep ? 'bg-success-50/50' : ''}`}
+                                      className={`border-b border-gray-100 last:border-0 ${isSelected ? 'bg-warning-50' : ''} ${isKeep ? 'bg-success-50/50' : ''} ${inBatch ? 'bg-primary-50' : ''}`}
                                     >
                                       <td className="px-4 py-3">
-                                        {!isKeep && (
+                                        {!isKeep && !batchMode && (
                                           <input
                                             type="checkbox"
                                             className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                                             checked={isSelected}
                                             onChange={() => toggleFileSelection(file.id)}
+                                          />
+                                        )}
+                                        {!isKeep && batchMode && (
+                                          <input
+                                            type="checkbox"
+                                            className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                                            checked={inBatch}
+                                            onChange={() => handleFileBatchToggle(group.id, file.id)}
                                           />
                                         )}
                                       </td>
@@ -433,6 +593,8 @@ export default function Duplicates() {
                                       <td className="px-4 py-3">
                                         {isKeep ? (
                                           <Badge variant="success">保留</Badge>
+                                        ) : inBatch ? (
+                                          <Badge variant="info">已选入方案</Badge>
                                         ) : isSelected ? (
                                           <Badge variant="warning">已选择</Badge>
                                         ) : (
@@ -524,6 +686,89 @@ export default function Duplicates() {
             </Button>
             <Button variant="warning" onClick={handleMoveToRecycle} loading={loading}>
               确认移入待回收区
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={showBatchModal}
+        onClose={() => setShowBatchModal(false)}
+        title="批量处置方案确认"
+        size="lg"
+      >
+        <div className="space-y-4">
+          <div className="bg-primary-50 border border-primary-200 rounded-lg p-4">
+            <div className="flex items-start gap-3">
+              <Layers className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-medium text-primary-800">方案概览</p>
+                <div className="grid grid-cols-2 gap-4 mt-2">
+                  <div>
+                    <p className="text-xs text-primary-600">涉及文件数</p>
+                    <p className="text-lg font-bold text-primary-800 font-mono">
+                      {formatNumber(batchPlan?.totalFileCount || 0)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-primary-600">预计释放空间</p>
+                    <p className="text-lg font-bold text-primary-800 font-mono">
+                      {formatFileSize(batchPlan?.totalSaveableSize || 0)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-primary-600">涉及部门</p>
+                    <p className="text-sm font-medium text-primary-800">
+                      {batchPlan?.departments.join('、') || '-'}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-primary-600">来源盘</p>
+                    <p className="text-sm font-medium text-primary-800">
+                      {batchPlan?.sourceDisks.map(d => getSourceDiskName(d)).join('、') || '-'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">处置原因</label>
+            <select
+              className="w-full px-3 py-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
+              value={batchReason}
+              onChange={(e) => setBatchReason(e.target.value)}
+            >
+              <option value="内容重复">内容重复</option>
+              <option value="版本过期">版本过期</option>
+              <option value="路径冗余">路径冗余</option>
+              <option value="已归档">已归档</option>
+              <option value="批量清理">批量清理</option>
+            </select>
+          </div>
+
+          <div className="bg-gray-50 rounded-lg p-4">
+            <h4 className="text-sm font-medium text-gray-700 mb-2">处置影响说明</h4>
+            <ul className="text-xs text-gray-500 space-y-1">
+              <li>• 所有选中的文件将被移入待回收区</li>
+              <li>• 需要法务/行政人员二次确认后才能永久删除</li>
+              <li>• 在待回收区内可随时恢复文件至原路径</li>
+              <li>• 所有操作将记录在审计日志中</li>
+            </ul>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-4">
+            <Button variant="secondary" onClick={() => setShowBatchModal(false)}>
+              取消
+            </Button>
+            <Button
+              variant="warning"
+              onClick={handleExecuteBatch}
+              loading={loading}
+              icon={<Trash2 className="w-4 h-4" />}
+            >
+              确认执行批量处置
             </Button>
           </div>
         </div>

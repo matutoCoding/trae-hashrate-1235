@@ -16,6 +16,7 @@ import {
   CheckCircle2,
   XCircle,
   RefreshCw,
+  FileWarning,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import StatCard from '@/components/ui/StatCard';
@@ -117,6 +118,47 @@ export default function Overview() {
           color="danger"
           delay={300}
         />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div className="bg-warning-50 border border-warning-200 rounded-lg p-5">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-warning-100 rounded-lg flex items-center justify-center">
+              <FileWarning className="w-6 h-6 text-warning-600" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm text-warning-700">待确认删除文件</p>
+              <p className="text-2xl font-bold text-warning-800 font-mono">
+                {formatNumber(overview?.pendingRecycleCount || 0)} 个
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-warning-600">涉及空间</p>
+              <p className="text-lg font-semibold text-warning-700 font-mono">
+                {formatFileSize(overview?.pendingRecycleSize || 0)}
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="bg-success-50 border border-success-200 rounded-lg p-5">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 bg-success-100 rounded-lg flex items-center justify-center">
+              <CheckCircle2 className="w-6 h-6 text-success-600" />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm text-success-700">已释放空间</p>
+              <p className="text-2xl font-bold text-success-800 font-mono">
+                {formatFileSize(0)}
+              </p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-success-600">本月累计</p>
+              <p className="text-lg font-semibold text-success-700 font-mono">
+                0 次清理
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
