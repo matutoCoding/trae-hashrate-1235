@@ -8,6 +8,11 @@ import type {
   ScanProgress,
   FilterOptions,
   BatchDisposalPlan,
+  DisposalHistoryEvent,
+  DeletedItem,
+  RectificationItem,
+  PersistentState,
+  FileItem,
 } from '@/types';
 import {
   generateDuplicateGroups,
@@ -19,7 +24,13 @@ import {
   getDiskTypes,
   delay,
   resetRandomSeed,
+  generateDisposalHistoryEvent,
+  generateRectificationItem,
+  getDepartmentHead,
 } from '@/utils/mock';
+
+const STORAGE_KEY = 'hash-dedup-state-v1';
+const CURRENT_OPERATOR = '当前用户';
 
 interface AppState {
   isInitialized: boolean;
@@ -27,16 +38,24 @@ interface AppState {
   duplicates: DuplicateGroup[];
   allDuplicates: DuplicateGroup[];
   recycleItems: RecycleItem[];
+  deletedItems: DeletedItem[];
   reports: DepartmentReport[];
   activities: ActivityLog[];
+  disposalHistory: DisposalHistoryEvent[];
+  rectificationItems: RectificationItem[];
+  totalFreedSpace: number;
   loading: boolean;
   currentScan: ScanProgress | null;
   selectedFileIds: string[];
   filters: FilterOptions;
   expandedGroupIds: string[];
+  expandedReportIds: string[];
   batchPlan: BatchDisposalPlan | null;
 
   initializeData: () => Promise<void>;
+  saveToLocalStorage: () => void;
+  loadFromLocalStorage: () => boolean;
+  resetAllData: () => Promise<void>;
   recalculateDerivedData: () => void;
 
   fetchOverview: () => Promise<void>;
@@ -52,15 +71,25 @@ interface AppState {
   approveDeletion: (recycleItemIds: string[]) => Promise<void>;
   rejectDeletion: (recycleItemIds: string[]) => Promise<void>;
 
+  addDisposalHistory: (event: DisposalHistoryEvent) => void;
+  getDisposalHistoryForFile: (fileId: string) => DisposalHistoryEvent[];
+  getDisposalHistoryForDepartment: (department: string) => DisposalHistoryEvent[];
+
+  sendRectification: (department: string, groupIds: string[], sentBy: string) => Promise<void>;
+  confirmRectification: (rectificationId: string, confirmedBy: string) => Promise<void>;
+  rejectRectification: (rectificationId: string, rejectReason: string, rejectedBy: string) => Promise<void>;
+  getRectificationForDepartment: (department: string) => RectificationItem[];
+
   toggleFileSelection: (fileId: string) => void;
   clearFileSelection: () => void;
   selectAllFiles: (fileIds: string[]) => void;
 
   toggleGroupExpand: (groupId: string) => void;
+  toggleReportExpand: (reportId: string) => void;
   setFilters: (filters: Partial<FilterOptions>) => void;
   clearFilters: () => void;
 
-  addActivity: (type: ActivityLog['type'], description: string) => void;
+  addActivity: (type: ActivityLog['type'], description: string, extra?: { department?: string; fileIds?: string[]; groupIds?: string[] }) => void;
 
   createBatchPlan: () => void;
   addToBatchPlan: (groupId: string, fileIds: string[]) => void;
@@ -83,45 +112,155 @@ export const useAppStore = create<AppState>((set, get) => ({
   duplicates: [],
   allDuplicates: [],
   recycleItems: [],
+  deletedItems: [],
   reports: [],
   activities: [],
+  disposalHistory: [],
+  rectificationItems: [],
+  totalFreedSpace: 0,
   loading: false,
   currentScan: null,
   selectedFileIds: [],
   filters: {},
   expandedGroupIds: [],
+  expandedReportIds: [],
   batchPlan: null,
+
+  saveToLocalStorage: () => {
+    const state = get();
+    const persistent: PersistentState = {
+      allDuplicates: state.allDuplicates,
+      recycleItems: state.recycleItems,
+      deletedItems: state.deletedItems,
+      activities: state.activities,
+      disposalHistory: state.disposalHistory,
+      rectificationItems: state.rectificationItems,
+      totalFreedSpace: state.totalFreedSpace,
+      initializedAt: new Date().toISOString(),
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(persistent));
+    } catch (e) {
+      console.warn('Failed to save to localStorage:', e);
+    }
+  },
+
+  loadFromLocalStorage: (): boolean => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (!saved) return false;
+
+      const persistent: PersistentState = JSON.parse(saved);
+      
+      const reports = generateDepartmentReports(
+        persistent.allDuplicates,
+        persistent.recycleItems,
+        persistent.rectificationItems,
+        persistent.deletedItems
+      );
+      const overview = generateOverviewStats(
+        persistent.allDuplicates,
+        persistent.recycleItems,
+        persistent.deletedItems,
+        persistent.totalFreedSpace
+      );
+
+      set({
+        isInitialized: true,
+        allDuplicates: persistent.allDuplicates,
+        duplicates: persistent.allDuplicates,
+        recycleItems: persistent.recycleItems,
+        deletedItems: persistent.deletedItems || [],
+        activities: persistent.activities,
+        disposalHistory: persistent.disposalHistory || [],
+        rectificationItems: persistent.rectificationItems || [],
+        totalFreedSpace: persistent.totalFreedSpace || 0,
+        reports,
+        overview,
+      });
+
+      return true;
+    } catch (e) {
+      console.warn('Failed to load from localStorage:', e);
+      return false;
+    }
+  },
+
+  resetAllData: async () => {
+    localStorage.removeItem(STORAGE_KEY);
+    set({
+      isInitialized: false,
+      allDuplicates: [],
+      duplicates: [],
+      recycleItems: [],
+      deletedItems: [],
+      activities: [],
+      disposalHistory: [],
+      rectificationItems: [],
+      totalFreedSpace: 0,
+      reports: [],
+      overview: null,
+    });
+    await get().initializeData();
+  },
 
   initializeData: async () => {
     if (get().isInitialized) return;
-    
+
+    const loaded = get().loadFromLocalStorage();
+    if (loaded) {
+      return;
+    }
+
     set({ loading: true });
     await delay(800);
 
     resetRandomSeed();
     const allDuplicates = generateDuplicateGroups(80);
-    const recycleItems = generateRecycleItems(15);
+    const { items: recycleItems, history: initialHistory } = generateRecycleItems(15);
     const activities = generateActivityLogs(20);
-    const reports = generateDepartmentReports(allDuplicates, recycleItems);
-    const overview = generateOverviewStats(allDuplicates, recycleItems);
+    
+    allDuplicates.forEach(group => {
+      group.files.forEach(file => {
+        const detectedEvent = generateDisposalHistoryEvent(
+          'detected',
+          file,
+          '系统',
+          undefined,
+          '哈希盘点发现重复文件'
+        );
+        detectedEvent.timestamp = group.detectedAt || file.detectedAt || detectedEvent.timestamp;
+        initialHistory.push(detectedEvent);
+      });
+    });
+
+    const reports = generateDepartmentReports(allDuplicates, recycleItems, [], []);
+    const overview = generateOverviewStats(allDuplicates, recycleItems, [], 0);
 
     set({
       isInitialized: true,
       allDuplicates,
       duplicates: allDuplicates,
       recycleItems,
+      deletedItems: [],
+      disposalHistory: initialHistory,
+      rectificationItems: [],
+      totalFreedSpace: 0,
       activities,
       reports,
       overview,
       loading: false,
     });
+
+    get().saveToLocalStorage();
   },
 
   recalculateDerivedData: () => {
-    const { allDuplicates, recycleItems } = get();
-    const reports = generateDepartmentReports(allDuplicates, recycleItems);
-    const overview = generateOverviewStats(allDuplicates, recycleItems);
+    const { allDuplicates, recycleItems, rectificationItems, deletedItems, totalFreedSpace } = get();
+    const reports = generateDepartmentReports(allDuplicates, recycleItems, rectificationItems, deletedItems);
+    const overview = generateOverviewStats(allDuplicates, recycleItems, deletedItems, totalFreedSpace);
     set({ reports, overview });
+    get().saveToLocalStorage();
   },
 
   fetchOverview: async () => {
@@ -220,11 +359,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const percentage = (newProcessed / current.totalFiles) * 100;
 
       const mockFiles = [
-        '/研发部/技术文档/API规范.pdf',
-        '/市场部/品牌素材/logo设计.psd',
-        '/财务部/财务报表/2024年度审计报告.xlsx',
-        '/人力资源部/员工档案/入职材料.docx',
-        '/项目盘/产品需求文档/PRD-v3.docx',
+        `/${diskType === 'department' ? '研发部' : diskType === 'project' ? '项目盘' : '归档盘'}/技术文档/API规范.pdf`,
+        `/${diskType === 'department' ? '市场部' : diskType === 'project' ? '项目盘' : '归档盘'}/品牌素材/logo设计.psd`,
+        `/${diskType === 'department' ? '财务部' : diskType === 'project' ? '项目盘' : '归档盘'}/财务报表/2024年度审计报告.xlsx`,
       ];
 
       set({
@@ -239,14 +376,45 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (newProcessed >= current.totalFiles) {
         clearInterval(scanInterval);
         setTimeout(() => {
-          const { addActivity, allDuplicates } = get();
-          const newGroups = generateDuplicateGroups(30).map(g => ({
+          const { addActivity, allDuplicates, disposalHistory } = get();
+          
+          resetRandomSeed();
+          const newGroups = generateDuplicateGroups(15).map(g => ({
             ...g,
             sourceDisk: diskType,
+            detectedAt: new Date().toISOString(),
+            files: g.files.map(f => ({
+              ...f,
+              sourceDisk: diskType,
+              detectedAt: new Date().toISOString(),
+              status: 'active' as const,
+            })),
           }));
+
+          const newHistory: DisposalHistoryEvent[] = [];
+          newGroups.forEach(group => {
+            group.files.forEach(file => {
+              const detectedEvent = generateDisposalHistoryEvent(
+                'detected',
+                file,
+                '系统',
+                undefined,
+                `${disk?.name || diskType}扫描发现重复文件`
+              );
+              detectedEvent.timestamp = group.detectedAt || file.detectedAt || detectedEvent.timestamp;
+              newHistory.push(detectedEvent);
+            });
+          });
+
           const updatedDuplicates = [...newGroups, ...allDuplicates].sort((a, b) => b.saveableSize - a.saveableSize);
+          const updatedHistory = [...newHistory, ...disposalHistory];
           
-          set({ allDuplicates: updatedDuplicates, duplicates: updatedDuplicates, currentScan: null });
+          set({ 
+            allDuplicates: updatedDuplicates, 
+            duplicates: updatedDuplicates, 
+            currentScan: null,
+            disposalHistory: updatedHistory,
+          });
           get().recalculateDerivedData();
           addActivity('scan', `完成${disk?.name || diskType}扫描，新增重复文件 ${newGroups.length} 组`);
         }, 500);
@@ -258,25 +426,59 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ currentScan: null });
   },
 
+  addDisposalHistory: (event: DisposalHistoryEvent) => {
+    set(state => ({
+      disposalHistory: [event, ...state.disposalHistory],
+    }));
+  },
+
+  getDisposalHistoryForFile: (fileId: string) => {
+    return get().disposalHistory.filter(h => h.fileId === fileId)
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  },
+
+  getDisposalHistoryForDepartment: (department: string) => {
+    return get().disposalHistory.filter(h => h.department === department)
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  },
+
   moveToRecycle: async (fileIds: string[], reason: string) => {
     set({ loading: true });
     await delay(800);
 
-    const { allDuplicates, addActivity } = get();
-    const movedFiles: RecycleItem[] = [];
+    const { allDuplicates, addActivity, disposalHistory } = get();
+    const movedItems: RecycleItem[] = [];
     const movedFileIds = new Set(fileIds);
+    const newHistory: DisposalHistoryEvent[] = [];
 
     allDuplicates.forEach(group => {
       group.files.forEach(file => {
         if (movedFileIds.has(file.id)) {
-          movedFiles.push({
+          const fileWithStatus: FileItem = { ...file, status: 'pending_recycle' };
+          
+          const historyEvent = generateDisposalHistoryEvent(
+            'moved_to_recycle',
+            file,
+            CURRENT_OPERATOR,
+            reason,
+            '移入待回收区'
+          );
+          
+          const detectedEvents = disposalHistory.filter(
+            h => h.fileId === file.id && h.type === 'detected'
+          );
+          
+          movedItems.push({
             id: `recycle-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
-            fileItem: file,
+            fileItem: fileWithStatus,
             movedAt: new Date().toISOString(),
-            movedBy: '当前用户',
+            movedBy: CURRENT_OPERATOR,
             reason,
             status: 'pending',
+            history: [...detectedEvents, historyEvent],
           });
+          
+          newHistory.push(historyEvent);
         }
       });
     });
@@ -308,50 +510,116 @@ export const useAppStore = create<AppState>((set, get) => ({
     set(state => ({
       allDuplicates: updatedDuplicates,
       duplicates: updatedDuplicates,
-      recycleItems: [...movedFiles, ...state.recycleItems],
+      recycleItems: [...movedItems, ...state.recycleItems],
+      disposalHistory: [...newHistory, ...state.disposalHistory],
       selectedFileIds: [],
       loading: false,
     }));
 
     get().recalculateDerivedData();
-    addActivity('move', `将 ${fileIds.length} 个文件移入待回收区，预计释放 ${formatSize(movedFiles.reduce((s, f) => s + f.fileItem.size, 0))}`);
+    addActivity('move', `将 ${fileIds.length} 个文件移入待回收区，预计释放 ${formatSize(movedItems.reduce((s, f) => s + f.fileItem.size, 0))}`, {
+      fileIds,
+    });
   },
 
   approveDeletion: async (recycleItemIds: string[]) => {
     set({ loading: true });
     await delay(1000);
 
-    const { recycleItems, addActivity } = get();
+    const { recycleItems, addActivity, disposalHistory } = get();
     const approvedItems = recycleItems.filter(item => recycleItemIds.includes(item.id));
     const totalSize = approvedItems.reduce((sum, item) => sum + item.fileItem.size, 0);
+    
+    const deletedItems: DeletedItem[] = [];
+    const newHistory: DisposalHistoryEvent[] = [];
+
+    approvedItems.forEach(item => {
+      const approvedEvent = generateDisposalHistoryEvent(
+        'approved',
+        item.fileItem,
+        CURRENT_OPERATOR,
+        item.reason,
+        '审核通过，准备删除'
+      );
+      
+      const deletedEvent = generateDisposalHistoryEvent(
+        'deleted',
+        item.fileItem,
+        CURRENT_OPERATOR,
+        item.reason,
+        '已永久删除'
+      );
+
+      const fileWithStatus: FileItem = { ...item.fileItem, status: 'deleted' };
+
+      deletedItems.push({
+        id: `deleted-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        fileItem: fileWithStatus,
+        deletedAt: deletedEvent.timestamp,
+        deletedBy: CURRENT_OPERATOR,
+        reason: item.reason,
+        history: [...item.history, approvedEvent, deletedEvent],
+      });
+
+      newHistory.push(approvedEvent, deletedEvent);
+    });
 
     set(state => ({
       recycleItems: state.recycleItems.filter(item => !recycleItemIds.includes(item.id)),
+      deletedItems: [...deletedItems, ...state.deletedItems],
+      disposalHistory: [...newHistory, ...state.disposalHistory],
+      totalFreedSpace: state.totalFreedSpace + totalSize,
       loading: false,
     }));
 
     get().recalculateDerivedData();
-    addActivity('delete', `永久删除 ${recycleItemIds.length} 个文件，释放空间 ${formatSize(totalSize)}`);
-    addActivity('approve', `审核通过 ${recycleItemIds.length} 个文件的删除申请`);
+    addActivity('delete', `永久删除 ${recycleItemIds.length} 个文件，释放空间 ${formatSize(totalSize)}`, {
+      fileIds: approvedItems.map(i => i.fileItem.id),
+    });
+    addActivity('approve', `审核通过 ${recycleItemIds.length} 个文件的删除申请`, {
+      fileIds: approvedItems.map(i => i.fileItem.id),
+    });
   },
 
   rejectDeletion: async (recycleItemIds: string[]) => {
     set({ loading: true });
     await delay(600);
 
-    const { recycleItems, addActivity, allDuplicates } = get();
+    const { recycleItems, addActivity, allDuplicates, disposalHistory } = get();
     const rejectedItems = recycleItems.filter(item => recycleItemIds.includes(item.id));
     
     const updatedDuplicates = [...allDuplicates];
+    const newHistory: DisposalHistoryEvent[] = [];
     
     rejectedItems.forEach(item => {
       const file = item.fileItem;
+      
+      const rejectedEvent = generateDisposalHistoryEvent(
+        'rejected',
+        file,
+        CURRENT_OPERATOR,
+        item.reason,
+        '驳回删除申请，已恢复'
+      );
+      
+      const restoredEvent = generateDisposalHistoryEvent(
+        'restored',
+        file,
+        CURRENT_OPERATOR,
+        undefined,
+        '文件已恢复至原路径'
+      );
+      
+      newHistory.push(rejectedEvent, restoredEvent);
+      
+      const fileWithStatus: FileItem = { ...file, status: 'active' };
+      
       const existingGroup = updatedDuplicates.find(g => g.hash === file.hash);
       
       if (existingGroup) {
         const alreadyExists = existingGroup.files.some(f => f.id === file.id);
         if (!alreadyExists) {
-          existingGroup.files.push(file);
+          existingGroup.files.push(fileWithStatus);
           existingGroup.fileCount = existingGroup.files.length;
           existingGroup.totalSize = existingGroup.files[0].size * existingGroup.fileCount;
           existingGroup.saveableSize = existingGroup.files[0].size * (existingGroup.fileCount - 1);
@@ -363,10 +631,11 @@ export const useAppStore = create<AppState>((set, get) => ({
           fileCount: 1,
           totalSize: file.size,
           saveableSize: 0,
-          files: [file],
+          files: [fileWithStatus],
           suggestedKeepId: file.id,
           department: file.department,
           sourceDisk: file.sourceDisk,
+          detectedAt: new Date().toISOString(),
         });
       }
     });
@@ -377,11 +646,118 @@ export const useAppStore = create<AppState>((set, get) => ({
       allDuplicates: updatedDuplicates,
       duplicates: updatedDuplicates,
       recycleItems: state.recycleItems.filter(item => !recycleItemIds.includes(item.id)),
+      disposalHistory: [...newHistory, ...state.disposalHistory],
       loading: false,
     }));
 
     get().recalculateDerivedData();
-    addActivity('reject', `恢复 ${recycleItemIds.length} 个文件至原路径`);
+    addActivity('reject', `恢复 ${recycleItemIds.length} 个文件至原路径`, {
+      fileIds: rejectedItems.map(i => i.fileItem.id),
+    });
+  },
+
+  sendRectification: async (department: string, groupIds: string[], sentBy: string) => {
+    set({ loading: true });
+    await delay(500);
+
+    const { allDuplicates, rectificationItems, addActivity } = get();
+    const newItems: RectificationItem[] = [];
+
+    groupIds.forEach(groupId => {
+      const group = allDuplicates.find(g => g.id === groupId);
+      if (group && group.department === department) {
+        const redundantFileIds = group.files
+          .filter(f => f.id !== group.suggestedKeepId && f.status === 'active')
+          .map(f => f.id);
+        
+        if (redundantFileIds.length > 0) {
+          newItems.push(generateRectificationItem(group, redundantFileIds, sentBy));
+        }
+      }
+    });
+
+    set(state => ({
+      rectificationItems: [...newItems, ...state.rectificationItems],
+      loading: false,
+    }));
+
+    get().recalculateDerivedData();
+    
+    const head = getDepartmentHead(department);
+    addActivity('send_rectification', `向 ${department}(${head.name}) 发送整改清单，涉及 ${newItems.length} 组重复文件`, {
+      department,
+      groupIds: newItems.map(i => i.groupId),
+    });
+  },
+
+  confirmRectification: async (rectificationId: string, confirmedBy: string) => {
+    set({ loading: true });
+    await delay(500);
+
+    const { rectificationItems, addActivity } = get();
+    
+    set(state => ({
+      rectificationItems: state.rectificationItems.map(item =>
+        item.id === rectificationId
+          ? {
+              ...item,
+              status: 'confirmed' as const,
+              confirmedAt: new Date().toISOString(),
+              confirmedBy,
+            }
+          : item
+      ),
+      loading: false,
+    }));
+
+    const item = rectificationItems.find(i => i.id === rectificationId);
+    if (item) {
+      addActivity('confirm_rectification', `${item.department} 确认整改清单，同意清理 ${item.fileCount} 个文件`, {
+        department: item.department,
+        groupIds: [item.groupId],
+        fileIds: item.fileIds,
+      });
+    }
+
+    get().recalculateDerivedData();
+  },
+
+  rejectRectification: async (rectificationId: string, rejectReason: string, rejectedBy: string) => {
+    set({ loading: true });
+    await delay(500);
+
+    const { rectificationItems, addActivity } = get();
+    
+    set(state => ({
+      rectificationItems: state.rectificationItems.map(item =>
+        item.id === rectificationId
+          ? {
+              ...item,
+              status: 'rejected' as const,
+              confirmedAt: new Date().toISOString(),
+              confirmedBy: rejectedBy,
+              rejectReason,
+            }
+          : item
+      ),
+      loading: false,
+    }));
+
+    const item = rectificationItems.find(i => i.id === rectificationId);
+    if (item) {
+      addActivity('reject_rectification', `${item.department} 驳回整改清单：${rejectReason}`, {
+        department: item.department,
+        groupIds: [item.groupId],
+      });
+    }
+
+    get().recalculateDerivedData();
+  },
+
+  getRectificationForDepartment: (department: string) => {
+    return get().rectificationItems
+      .filter(item => item.department === department)
+      .sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime());
   },
 
   toggleFileSelection: (fileId: string) => {
@@ -415,6 +791,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     }));
   },
 
+  toggleReportExpand: (reportId: string) => {
+    set(state => ({
+      expandedReportIds: state.expandedReportIds.includes(reportId)
+        ? state.expandedReportIds.filter(id => id !== reportId)
+        : [...state.expandedReportIds, reportId],
+    }));
+  },
+
   setFilters: (filters: Partial<FilterOptions>) => {
     set(state => ({ filters: { ...state.filters, ...filters } }));
   },
@@ -423,15 +807,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ filters: {} });
   },
 
-  addActivity: (type: ActivityLog['type'], description: string) => {
+  addActivity: (type: ActivityLog['type'], description: string, extra?: { department?: string; fileIds?: string[]; groupIds?: string[] }) => {
     const newActivity: ActivityLog = {
       id: `activity-${Date.now()}`,
       type,
       description,
-      operator: '当前用户',
+      operator: CURRENT_OPERATOR,
       timestamp: new Date().toISOString(),
+      ...extra,
     };
     set(state => ({ activities: [newActivity, ...state.activities].slice(0, 50) }));
+    get().saveToLocalStorage();
   },
 
   createBatchPlan: () => {

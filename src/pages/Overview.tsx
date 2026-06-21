@@ -17,6 +17,9 @@ import {
   XCircle,
   RefreshCw,
   FileWarning,
+  Send,
+  ThumbsUp,
+  ThumbsDown,
 } from 'lucide-react';
 import { useAppStore } from '@/store/useAppStore';
 import StatCard from '@/components/ui/StatCard';
@@ -34,6 +37,9 @@ const activityIcons: Record<ActivityType, any> = {
   approve: CheckCircle2,
   reject: XCircle,
   delete: Trash2,
+  send_rectification: Send,
+  confirm_rectification: ThumbsUp,
+  reject_rectification: ThumbsDown,
 };
 
 const activityColors: Record<ActivityType, string> = {
@@ -42,6 +48,9 @@ const activityColors: Record<ActivityType, string> = {
   approve: 'bg-success-100 text-success-600',
   reject: 'bg-danger-100 text-danger-600',
   delete: 'bg-danger-100 text-danger-600',
+  send_rectification: 'bg-info-100 text-info-600',
+  confirm_rectification: 'bg-success-100 text-success-600',
+  reject_rectification: 'bg-danger-100 text-danger-600',
 };
 
 const activityLabels: Record<ActivityType, string> = {
@@ -50,6 +59,9 @@ const activityLabels: Record<ActivityType, string> = {
   approve: '通过',
   reject: '驳回',
   delete: '删除',
+  send_rectification: '发整改',
+  confirm_rectification: '已确认',
+  reject_rectification: '已驳回',
 };
 
 export default function Overview() {

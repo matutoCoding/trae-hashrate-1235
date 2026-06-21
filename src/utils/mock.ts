@@ -9,6 +9,9 @@ import type {
   DailyTrend,
   DepartmentDistribution,
   BatchDisposalPlan,
+  DisposalHistoryEvent,
+  DeletedItem,
+  RectificationItem,
 } from '@/types';
 
 const FIXED_SEED = 20240101;
@@ -29,6 +32,18 @@ export function resetRandomSeed() {
 }
 
 const departments = ['研发部', '市场部', '财务部', '人力资源部', '法务部', '行政部', '产品部', '运营部'];
+
+const departmentHeads: Record<string, { name: string; email: string }> = {
+  '研发部': { name: '王强', email: 'wangqiang@company.com' },
+  '市场部': { name: '李娜', email: 'lina@company.com' },
+  '财务部': { name: '张伟', email: 'zhangwei@company.com' },
+  '人力资源部': { name: '刘芳', email: 'liufang@company.com' },
+  '法务部': { name: '陈明', email: 'chenming@company.com' },
+  '行政部': { name: '杨洋', email: 'yangyang@company.com' },
+  '产品部': { name: '赵磊', email: 'zhaolei@company.com' },
+  '运营部': { name: '周婷', email: 'zhouting@company.com' },
+};
+
 const users = ['张伟', '李娜', '王强', '刘芳', '陈明', '杨洋', '赵磊', '周婷', '吴静', '郑浩'];
 const fileTypes = ['pdf', 'docx', 'xlsx', 'pptx', 'jpg', 'png', 'mp4', 'zip'];
 const sourceDisks = ['department', 'project', 'archive'];
@@ -37,6 +52,10 @@ const sourceDiskNames: Record<string, string> = {
   project: '项目盘',
   archive: '归档盘',
 };
+
+export function getDepartmentHead(dept: string) {
+  return departmentHeads[dept] || { name: '待定', email: 'pending@company.com' };
+}
 
 function generateId(): string {
   return rng().toString(36).substring(2, 15) + rng().toString(36).substring(2, 15);
@@ -134,7 +153,8 @@ function generateFileItem(
   fileSize: number,
   index: number,
   department: string,
-  sourceDisk: string
+  sourceDisk: string,
+  detectedAt: string
 ): FileItem {
   const paths = basePathsByDeptAndDisk[department]?.[sourceDisk] || ['/公共文档'];
   const basePath = paths[index % paths.length];
@@ -167,6 +187,8 @@ function generateFileItem(
     department,
     fileType,
     sourceDisk,
+    status: 'active',
+    detectedAt,
   };
 }
 
@@ -199,10 +221,14 @@ export function generateDuplicateGroups(count: number = 50): DuplicateGroup[] {
     const fileSize = randomFileSize(fileType);
     const department = randomFromArray(departments);
     const sourceDisk = randomFromArray(sourceDisks);
+    const detectedAt = randomDate(
+      new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+      new Date()
+    );
     const files: FileItem[] = [];
 
     for (let j = 0; j < fileCount; j++) {
-      files.push(generateFileItem(hash, baseName, fileType, fileSize, j, department, sourceDisk));
+      files.push(generateFileItem(hash, baseName, fileType, fileSize, j, department, sourceDisk, detectedAt));
     }
 
     const totalSize = fileSize * fileCount;
@@ -219,14 +245,16 @@ export function generateDuplicateGroups(count: number = 50): DuplicateGroup[] {
       suggestedKeepId,
       department,
       sourceDisk,
+      detectedAt,
     });
   }
 
   return groups.sort((a, b) => b.saveableSize - a.saveableSize);
 }
 
-export function generateRecycleItems(count: number = 20): RecycleItem[] {
+export function generateRecycleItems(count: number = 20): { items: RecycleItem[]; history: DisposalHistoryEvent[] } {
   const items: RecycleItem[] = [];
+  const history: DisposalHistoryEvent[] = [];
   const groups = generateDuplicateGroups(Math.ceil(count / 2));
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
@@ -235,41 +263,100 @@ export function generateRecycleItems(count: number = 20): RecycleItem[] {
   for (const group of groups) {
     for (const file of group.files.slice(1)) {
       if (items.length >= count) break;
+      
+      const movedAt = randomDate(sevenDaysAgo, now);
+      const movedBy = randomFromArray(users);
+      const reason = randomFromArray(reasons);
+      
+      const detectedEvent: DisposalHistoryEvent = {
+        id: generateId(),
+        type: 'detected',
+        fileId: file.id,
+        fileHash: file.hash,
+        fileName: file.name,
+        filePath: file.path,
+        department: file.department,
+        sourceDisk: file.sourceDisk,
+        operator: '系统',
+        timestamp: group.detectedAt || movedAt,
+        remark: '哈希盘点发现重复文件',
+      };
+      
+      const movedEvent: DisposalHistoryEvent = {
+        id: generateId(),
+        type: 'moved_to_recycle',
+        fileId: file.id,
+        fileHash: file.hash,
+        fileName: file.name,
+        filePath: file.path,
+        department: file.department,
+        sourceDisk: file.sourceDisk,
+        operator: movedBy,
+        timestamp: movedAt,
+        reason,
+        remark: '移入待回收区',
+      };
+      
+      history.push(detectedEvent, movedEvent);
+      
+      const fileWithStatus = { ...file, status: 'pending_recycle' as const };
+      
       items.push({
         id: generateId(),
-        fileItem: file,
-        movedAt: randomDate(sevenDaysAgo, now),
-        movedBy: randomFromArray(users),
-        reason: randomFromArray(reasons),
+        fileItem: fileWithStatus,
+        movedAt,
+        movedBy,
+        reason,
         status: 'pending',
+        history: [detectedEvent, movedEvent],
       });
     }
   }
 
-  return items.sort((a, b) => new Date(b.movedAt).getTime() - new Date(a.movedAt).getTime());
+  return {
+    items: items.sort((a, b) => new Date(b.movedAt).getTime() - new Date(a.movedAt).getTime()),
+    history,
+  };
 }
 
 export function generateDepartmentReports(
   duplicateGroups: DuplicateGroup[],
-  recycleItems: RecycleItem[]
+  recycleItems: RecycleItem[],
+  rectificationItems: RectificationItem[] = [],
+  deletedItems: DeletedItem[] = []
 ): DepartmentReport[] {
   const deptMap = new Map<string, {
     duplicateCount: number;
     duplicateSize: number;
     saveableSize: number;
     fileCount: number;
+    totalFileCount: number;
     pendingRecycleCount: number;
     pendingRecycleSize: number;
+    rectificationCount: number;
+    rectificationPending: number;
+    rectificationConfirmed: number;
+    rectificationRejected: number;
+    deletedCount: number;
+    deletedSize: number;
   }>();
 
   departments.forEach(dept => {
+    const head = getDepartmentHead(dept);
     deptMap.set(dept, {
       duplicateCount: 0,
       duplicateSize: 0,
       saveableSize: 0,
-      fileCount: randomInt(500, 5000),
+      fileCount: 0,
+      totalFileCount: randomInt(8000, 20000),
       pendingRecycleCount: 0,
       pendingRecycleSize: 0,
+      rectificationCount: 0,
+      rectificationPending: 0,
+      rectificationConfirmed: 0,
+      rectificationRejected: 0,
+      deletedCount: 0,
+      deletedSize: 0,
     });
   });
 
@@ -291,8 +378,27 @@ export function generateDepartmentReports(
     }
   });
 
+  rectificationItems.forEach(item => {
+    const data = deptMap.get(item.department);
+    if (data) {
+      data.rectificationCount += 1;
+      if (item.status === 'pending') data.rectificationPending += 1;
+      if (item.status === 'confirmed') data.rectificationConfirmed += 1;
+      if (item.status === 'rejected') data.rectificationRejected += 1;
+    }
+  });
+
+  deletedItems.forEach(item => {
+    const data = deptMap.get(item.fileItem.department);
+    if (data) {
+      data.deletedCount += 1;
+      data.deletedSize += item.fileItem.size;
+    }
+  });
+
   const reports: DepartmentReport[] = [];
   deptMap.forEach((data, name) => {
+    const head = getDepartmentHead(name);
     reports.push({
       id: generateId(),
       name,
@@ -300,9 +406,17 @@ export function generateDepartmentReports(
       duplicateSize: data.duplicateSize,
       saveableSize: data.saveableSize,
       fileCount: data.fileCount,
+      totalFileCount: data.totalFileCount,
+      duplicateRate: data.totalFileCount > 0 ? data.fileCount / data.totalFileCount : 0,
       rank: 0,
       pendingRecycleCount: data.pendingRecycleCount,
       pendingRecycleSize: data.pendingRecycleSize,
+      head: head.name,
+      headEmail: head.email,
+      rectificationCount: data.rectificationCount,
+      rectificationPending: data.rectificationPending,
+      rectificationConfirmed: data.rectificationConfirmed,
+      rectificationRejected: data.rectificationRejected,
     });
   });
 
@@ -350,7 +464,9 @@ export function generateDepartmentDistribution(
 
 export function generateOverviewStats(
   duplicateGroups: DuplicateGroup[],
-  recycleItems: RecycleItem[]
+  recycleItems: RecycleItem[],
+  deletedItems: DeletedItem[] = [],
+  totalFreedSpace: number = 0
 ): OverviewStats {
   const totalDuplicateGroups = duplicateGroups.length;
   const totalSaveableSpace = duplicateGroups.reduce((sum, g) => sum + g.saveableSize, 0);
@@ -371,6 +487,8 @@ export function generateOverviewStats(
   });
 
   const pendingRecycle = recycleItems.filter(i => i.status === 'pending');
+  const totalDeletedCount = deletedItems.length;
+  const totalDeletedSize = deletedItems.reduce((sum, i) => sum + i.fileItem.size, 0);
 
   return {
     totalDuplicateGroups,
@@ -381,6 +499,9 @@ export function generateOverviewStats(
     departmentDistribution: generateDepartmentDistribution(duplicateGroups),
     pendingRecycleCount: pendingRecycle.length,
     pendingRecycleSize: pendingRecycle.reduce((sum, i) => sum + i.fileItem.size, 0),
+    totalDeletedCount,
+    totalDeletedSize,
+    totalFreedSpace,
   };
 }
 
@@ -409,11 +530,22 @@ export function generateActivityLogs(count: number = 15): ActivityLog[] {
       '永久删除 28 个文件，释放空间 1.2 GB',
       '永久删除 56 个文件，释放空间 3.8 GB',
     ],
+    send_rectification: [
+      '向人力资源部发送整改清单，涉及 12 组重复文件',
+      '向行政部发送整改清单，涉及 8 组重复文件',
+    ],
+    confirm_rectification: [
+      '研发部确认整改清单，同意清理 15 组文件',
+      '市场部确认整改清单，同意清理 9 组文件',
+    ],
+    reject_rectification: [
+      '财务部驳回整改清单，需重新核对文件清单',
+    ],
   };
 
   const now = new Date();
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
-  const types: Array<'scan' | 'move' | 'approve' | 'reject' | 'delete'> = ['scan', 'move', 'approve', 'reject', 'delete'];
+  const types: Array<ActivityLog['type']> = ['scan', 'move', 'approve', 'reject', 'delete', 'send_rectification', 'confirm_rectification', 'reject_rectification'];
 
   for (let i = 0; i < count; i++) {
     const type = randomFromArray(types);
@@ -459,5 +591,50 @@ export function generateEmptyBatchPlan(): BatchDisposalPlan {
     departments: [],
     sourceDisks: [],
     status: 'draft',
+  };
+}
+
+export function generateDisposalHistoryEvent(
+  type: DisposalHistoryEvent['type'],
+  file: FileItem,
+  operator: string,
+  reason?: string,
+  remark?: string
+): DisposalHistoryEvent {
+  return {
+    id: generateId(),
+    type,
+    fileId: file.id,
+    fileHash: file.hash,
+    fileName: file.name,
+    filePath: file.path,
+    department: file.department,
+    sourceDisk: file.sourceDisk,
+    operator,
+    timestamp: new Date().toISOString(),
+    reason,
+    remark,
+  };
+}
+
+export function generateRectificationItem(
+  group: DuplicateGroup,
+  fileIds: string[],
+  sentBy: string
+): RectificationItem {
+  const files = group.files.filter(f => fileIds.includes(f.id));
+  return {
+    id: generateId(),
+    department: group.department,
+    groupId: group.id,
+    fileIds,
+    fileCount: files.length,
+    totalSize: files.reduce((sum, f) => sum + f.size, 0),
+    saveableSize: files.length > 1 ? files[0].size * (files.length - 1) : files.length > 0 ? files[0].size : 0,
+    sourceDisk: group.sourceDisk,
+    sentAt: new Date().toISOString(),
+    sentBy,
+    status: 'pending',
+    files,
   };
 }
