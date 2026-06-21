@@ -204,7 +204,7 @@ function generateKeepSuggestion(files: FileItem[]): string {
   return sorted[0].id;
 }
 
-export function generateDuplicateGroups(count: number = 50): DuplicateGroup[] {
+export function generateDuplicateGroups(count: number = 50, forcedSourceDisk?: string): DuplicateGroup[] {
   const groups: DuplicateGroup[] = [];
   const baseNames = [
     '项目计划书', '年度预算', '产品需求文档', '设计规范', '培训材料',
@@ -220,7 +220,7 @@ export function generateDuplicateGroups(count: number = 50): DuplicateGroup[] {
     const fileType = randomFromArray(fileTypes);
     const fileSize = randomFileSize(fileType);
     const department = randomFromArray(departments);
-    const sourceDisk = randomFromArray(sourceDisks);
+    const sourceDisk = forcedSourceDisk || randomFromArray(sourceDisks);
     const detectedAt = randomDate(
       new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
       new Date()
@@ -323,7 +323,8 @@ export function generateDepartmentReports(
   duplicateGroups: DuplicateGroup[],
   recycleItems: RecycleItem[],
   rectificationItems: RectificationItem[] = [],
-  deletedItems: DeletedItem[] = []
+  deletedItems: DeletedItem[] = [],
+  deptTotalFileCounts?: Record<string, number>
 ): DepartmentReport[] {
   const deptMap = new Map<string, {
     duplicateCount: number;
@@ -343,12 +344,13 @@ export function generateDepartmentReports(
 
   departments.forEach(dept => {
     const head = getDepartmentHead(dept);
+    const fixedTotal = deptTotalFileCounts?.[dept];
     deptMap.set(dept, {
       duplicateCount: 0,
       duplicateSize: 0,
       saveableSize: 0,
       fileCount: 0,
-      totalFileCount: randomInt(8000, 20000),
+      totalFileCount: fixedTotal !== undefined ? fixedTotal : randomInt(8000, 20000),
       pendingRecycleCount: 0,
       pendingRecycleSize: 0,
       rectificationCount: 0,

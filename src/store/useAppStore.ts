@@ -13,6 +13,7 @@ import type {
   RectificationItem,
   PersistentState,
   FileItem,
+  RestoredItem,
 } from '@/types';
 import {
   generateDuplicateGroups,
@@ -39,11 +40,13 @@ interface AppState {
   allDuplicates: DuplicateGroup[];
   recycleItems: RecycleItem[];
   deletedItems: DeletedItem[];
+  restoredItems: RestoredItem[];
   reports: DepartmentReport[];
   activities: ActivityLog[];
   disposalHistory: DisposalHistoryEvent[];
   rectificationItems: RectificationItem[];
   totalFreedSpace: number;
+  deptTotalFileCounts: Record<string, number>;
   loading: boolean;
   currentScan: ScanProgress | null;
   selectedFileIds: string[];
@@ -113,11 +116,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   allDuplicates: [],
   recycleItems: [],
   deletedItems: [],
+  restoredItems: [],
   reports: [],
   activities: [],
   disposalHistory: [],
   rectificationItems: [],
   totalFreedSpace: 0,
+  deptTotalFileCounts: {},
   loading: false,
   currentScan: null,
   selectedFileIds: [],
@@ -132,10 +137,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       allDuplicates: state.allDuplicates,
       recycleItems: state.recycleItems,
       deletedItems: state.deletedItems,
+      restoredItems: state.restoredItems,
       activities: state.activities,
       disposalHistory: state.disposalHistory,
       rectificationItems: state.rectificationItems,
       totalFreedSpace: state.totalFreedSpace,
+      deptTotalFileCounts: state.deptTotalFileCounts,
       initializedAt: new Date().toISOString(),
     };
     try {
@@ -156,7 +163,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         persistent.allDuplicates,
         persistent.recycleItems,
         persistent.rectificationItems,
-        persistent.deletedItems
+        persistent.deletedItems,
+        persistent.deptTotalFileCounts
       );
       const overview = generateOverviewStats(
         persistent.allDuplicates,
@@ -171,10 +179,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         duplicates: persistent.allDuplicates,
         recycleItems: persistent.recycleItems,
         deletedItems: persistent.deletedItems || [],
+        restoredItems: persistent.restoredItems || [],
         activities: persistent.activities,
         disposalHistory: persistent.disposalHistory || [],
         rectificationItems: persistent.rectificationItems || [],
         totalFreedSpace: persistent.totalFreedSpace || 0,
+        deptTotalFileCounts: persistent.deptTotalFileCounts || {},
         reports,
         overview,
       });
@@ -194,10 +204,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       duplicates: [],
       recycleItems: [],
       deletedItems: [],
+      restoredItems: [],
       activities: [],
       disposalHistory: [],
       rectificationItems: [],
       totalFreedSpace: 0,
+      deptTotalFileCounts: {},
       reports: [],
       overview: null,
     });
@@ -234,7 +246,21 @@ export const useAppStore = create<AppState>((set, get) => ({
       });
     });
 
-    const reports = generateDepartmentReports(allDuplicates, recycleItems, [], []);
+    const departmentsList = ['研发部', '市场部', '财务部', '人力资源部', '法务部', '行政部', '产品部', '运营部'];
+    const deptCounts: Record<string, number> = {};
+    const deptRngFn = (seed: number) => {
+      let s = seed;
+      return () => {
+        s = (s * 9301 + 49297) % 233280;
+        return s / 233280;
+      };
+    };
+    const seededRng = deptRngFn(20240101);
+    departmentsList.forEach(dept => {
+      deptCounts[dept] = Math.floor(8000 + seededRng() * 12000);
+    });
+
+    const reports = generateDepartmentReports(allDuplicates, recycleItems, [], [], deptCounts);
     const overview = generateOverviewStats(allDuplicates, recycleItems, [], 0);
 
     set({
@@ -243,9 +269,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       duplicates: allDuplicates,
       recycleItems,
       deletedItems: [],
+      restoredItems: [],
       disposalHistory: initialHistory,
       rectificationItems: [],
       totalFreedSpace: 0,
+      deptTotalFileCounts: deptCounts,
       activities,
       reports,
       overview,
@@ -256,8 +284,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   recalculateDerivedData: () => {
-    const { allDuplicates, recycleItems, rectificationItems, deletedItems, totalFreedSpace } = get();
-    const reports = generateDepartmentReports(allDuplicates, recycleItems, rectificationItems, deletedItems);
+    const { allDuplicates, recycleItems, rectificationItems, deletedItems, totalFreedSpace, deptTotalFileCounts } = get();
+    const reports = generateDepartmentReports(allDuplicates, recycleItems, rectificationItems, deletedItems, deptTotalFileCounts);
     const overview = generateOverviewStats(allDuplicates, recycleItems, deletedItems, totalFreedSpace);
     set({ reports, overview });
     get().saveToLocalStorage();
@@ -379,13 +407,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           const { addActivity, allDuplicates, disposalHistory } = get();
           
           resetRandomSeed();
-          const newGroups = generateDuplicateGroups(15).map(g => ({
+          const scanSeedOffset = Date.now() % 100000;
+          const newGroups = generateDuplicateGroups(15, diskType).map((g, idx) => ({
             ...g,
-            sourceDisk: diskType,
+            id: `scan-${Date.now()}-${idx}`,
             detectedAt: new Date().toISOString(),
-            files: g.files.map(f => ({
+            files: g.files.map((f, fidx) => ({
               ...f,
-              sourceDisk: diskType,
+              id: `file-${Date.now()}-${idx}-${fidx}`,
               detectedAt: new Date().toISOString(),
               status: 'active' as const,
             })),
@@ -590,6 +619,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     
     const updatedDuplicates = [...allDuplicates];
     const newHistory: DisposalHistoryEvent[] = [];
+    const restoredItemsList: RestoredItem[] = [];
     
     rejectedItems.forEach(item => {
       const file = item.fileItem;
@@ -612,7 +642,18 @@ export const useAppStore = create<AppState>((set, get) => ({
       
       newHistory.push(rejectedEvent, restoredEvent);
       
+      const fullHistory = [...item.history, rejectedEvent, restoredEvent];
+      
       const fileWithStatus: FileItem = { ...file, status: 'active' };
+      
+      restoredItemsList.push({
+        id: `restored-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        fileItem: fileWithStatus,
+        restoredAt: restoredEvent.timestamp,
+        restoredBy: CURRENT_OPERATOR,
+        reason: item.reason,
+        history: fullHistory,
+      });
       
       const existingGroup = updatedDuplicates.find(g => g.hash === file.hash);
       
@@ -646,6 +687,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       allDuplicates: updatedDuplicates,
       duplicates: updatedDuplicates,
       recycleItems: state.recycleItems.filter(item => !recycleItemIds.includes(item.id)),
+      restoredItems: [...restoredItemsList, ...state.restoredItems],
       disposalHistory: [...newHistory, ...state.disposalHistory],
       loading: false,
     }));

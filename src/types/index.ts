@@ -2,6 +2,15 @@ export type FileStatus = 'active' | 'pending_recycle' | 'recycled' | 'deleted' |
 
 export type DisposalEventType = 'detected' | 'moved_to_recycle' | 'review_pending' | 'approved' | 'rejected' | 'deleted' | 'restored';
 
+export interface RestoredItem {
+  id: string;
+  fileItem: FileItem;
+  restoredAt: string;
+  restoredBy: string;
+  reason: string;
+  history: DisposalHistoryEvent[];
+}
+
 export interface DisposalHistoryEvent {
   id: string;
   type: DisposalEventType;
@@ -193,9 +202,11 @@ export interface PersistentState {
   allDuplicates: DuplicateGroup[];
   recycleItems: RecycleItem[];
   deletedItems: DeletedItem[];
+  restoredItems: RestoredItem[];
   activities: ActivityLog[];
   disposalHistory: DisposalHistoryEvent[];
   rectificationItems: RectificationItem[];
   totalFreedSpace: number;
+  deptTotalFileCounts: Record<string, number>;
   initializedAt: string;
 }

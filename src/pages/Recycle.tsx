@@ -28,7 +28,7 @@ import Modal from '@/components/ui/Modal';
 import { formatFileSize, formatDateTime, formatNumber, getFileTypeColor } from '@/utils/format';
 import { getSourceDiskName } from '@/utils/mock';
 import { exportRecycleItems } from '@/utils/export';
-import type { RecycleItem, DisposalHistoryEvent } from '@/types';
+import type { RecycleItem, DisposalHistoryEvent, DeletedItem, RestoredItem } from '@/types';
 
 const eventTypeConfig: Record<DisposalHistoryEvent['type'], { label: string; color: string; icon: string }> = {
   detected: { label: '发现重复', color: 'bg-info-500', icon: '🔍' },
@@ -91,6 +91,8 @@ function DisposalTimeline({ history }: { history: DisposalHistoryEvent[] }) {
 export default function Recycle() {
   const {
     recycleItems,
+    deletedItems,
+    restoredItems,
     loading,
     overview,
     fetchRecycleItems,
@@ -108,10 +110,21 @@ export default function Recycle() {
   const [filterDepartment, setFilterDepartment] = useState('');
   const [filterSourceDisk, setFilterSourceDisk] = useState('');
   const [searchKeyword, setSearchKeyword] = useState('');
+  const [activeTab, setActiveTab] = useState<'pending' | 'deleted' | 'restored'>('pending');
 
   const pendingItems = recycleItems.filter(item => item.status === 'pending');
   
-  const filteredItems = pendingItems.filter(item => {
+  type DisplayItem = (RecycleItem | DeletedItem | RestoredItem) & { _type: 'pending' | 'deleted' | 'restored' };
+  
+  const allItems: DisplayItem[] = [
+    ...pendingItems.map(i => ({ ...i, _type: 'pending' as const })),
+    ...deletedItems.map(i => ({ ...i, _type: 'deleted' as const })),
+    ...restoredItems.map(i => ({ ...i, _type: 'restored' as const })),
+  ];
+  
+  const itemsByTab: DisplayItem[] = allItems.filter(i => i._type === activeTab);
+  
+  const filteredItems = itemsByTab.filter(item => {
     const matchDept = !filterDepartment || item.fileItem.department === filterDepartment;
     const matchDisk = !filterSourceDisk || item.fileItem.sourceDisk === filterSourceDisk;
     const matchKeyword = !searchKeyword || 
@@ -121,10 +134,15 @@ export default function Recycle() {
   });
 
   const totalPendingSize = filteredItems.reduce((sum, item) => sum + item.fileItem.size, 0);
-  const totalSaveable = overview?.pendingRecycleSize || 0;
+  const totalSaveable = activeTab === 'pending' ? (overview?.pendingRecycleSize || 0) : totalPendingSize;
+  const totalFreedByDeleted = deletedItems.reduce((sum, item) => sum + item.fileItem.size, 0);
 
-  const departments = Array.from(new Set(pendingItems.map(i => i.fileItem.department)));
-  const sourceDisks = Array.from(new Set(pendingItems.map(i => i.fileItem.sourceDisk)));
+  const card1Title = activeTab === 'pending' ? '待确认文件' : activeTab === 'deleted' ? '已删除文件' : '已恢复文件';
+  const card2Title = activeTab === 'pending' ? '涉及空间' : activeTab === 'deleted' ? '已释放空间' : '恢复文件空间';
+  const card3Title = activeTab === 'pending' ? '预计节省' : activeTab === 'deleted' ? '累计清理次数' : '累计恢复次数';
+
+  const departments = Array.from(new Set(itemsByTab.map(i => i.fileItem.department)));
+  const sourceDisks = Array.from(new Set(itemsByTab.map(i => i.fileItem.sourceDisk)));
 
   useEffect(() => {
     fetchRecycleItems();
@@ -195,11 +213,15 @@ export default function Recycle() {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="bg-white rounded-lg border border-gray-200 p-6">
           <div className="flex items-center gap-3">
-            <div className="w-12 h-12 bg-warning-100 rounded-lg flex items-center justify-center">
-              <FileWarning className="w-6 h-6 text-warning-600" />
+            <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${
+              activeTab === 'pending' ? 'bg-warning-100' : activeTab === 'deleted' ? 'bg-danger-100' : 'bg-success-100'
+            }`}>
+              {activeTab === 'pending' && <FileWarning className={`w-6 h-6 text-warning-600`} />}
+              {activeTab === 'deleted' && <Trash2 className={`w-6 h-6 text-danger-600`} />}
+              {activeTab === 'restored' && <RefreshCw className={`w-6 h-6 text-success-600`} />}
             </div>
             <div>
-              <p className="text-sm text-gray-500">待确认文件</p>
+              <p className="text-sm text-gray-500">{card1Title}</p>
               <p className="text-2xl font-bold text-gray-900 font-mono">
                 {formatNumber(filteredItems.length)}
               </p>
@@ -213,9 +235,9 @@ export default function Recycle() {
               <HardDrive className="w-6 h-6 text-primary-600" />
             </div>
             <div>
-              <p className="text-sm text-gray-500">涉及空间</p>
+              <p className="text-sm text-gray-500">{card2Title}</p>
               <p className="text-2xl font-bold text-gray-900 font-mono">
-                {formatFileSize(totalPendingSize)}
+                {activeTab === 'deleted' ? formatFileSize(totalFreedByDeleted) : formatFileSize(totalPendingSize)}
               </p>
             </div>
           </div>
@@ -227,9 +249,16 @@ export default function Recycle() {
               <ShieldCheck className="w-6 h-6 text-success-600" />
             </div>
             <div>
-              <p className="text-sm text-gray-500">预计节省</p>
-              <p className="text-2xl font-bold text-success-600 font-mono">
-                {formatFileSize(totalSaveable)}
+              <p className="text-sm text-gray-500">{card3Title}</p>
+              <p className={`text-2xl font-bold font-mono ${
+                activeTab === 'pending' ? 'text-success-600' : 'text-gray-900'
+              }`}>
+                {activeTab === 'pending' 
+                  ? formatFileSize(totalSaveable)
+                  : activeTab === 'deleted'
+                    ? `${formatNumber(deletedItems.length)} 次`
+                    : `${formatNumber(restoredItems.length)} 次`
+                }
               </p>
             </div>
           </div>
@@ -250,40 +279,108 @@ export default function Recycle() {
         </div>
       </div>
 
-      <div className="bg-info-50 border border-info-200 rounded-lg p-4">
-        <div className="flex items-start gap-3">
-          <ShieldCheck className="w-5 h-5 text-info-600 flex-shrink-0 mt-0.5" />
-          <div>
-            <p className="font-medium text-info-800">安全处置流程</p>
-            <p className="text-sm text-info-700 mt-1">
-              待回收区的文件需要法务/行政人员二次确认后才能永久删除。
-              您可以选择恢复文件至原路径，或确认执行永久删除操作。
-              所有操作均会记录在审计日志中，点击文件行可查看完整处置时间线。
-            </p>
-            <div className="flex items-center gap-4 mt-3">
-              <div className="flex items-center gap-1 text-xs text-info-600">
-                <div className="w-2 h-2 rounded-full bg-info-500" />
-                <span>第1步：发现重复</span>
-              </div>
-              <ArrowLeft className="w-4 h-4 text-info-400 rotate-180" />
-              <div className="flex items-center gap-1 text-xs text-info-600">
-                <div className="w-2 h-2 rounded-full bg-warning-500" />
-                <span>第2步：移入待回收</span>
-              </div>
-              <ArrowLeft className="w-4 h-4 text-info-400 rotate-180" />
-              <div className="flex items-center gap-1 text-xs text-info-600">
-                <div className="w-2 h-2 rounded-full bg-info-500" />
-                <span>第3步：二次审核</span>
-              </div>
-              <ArrowLeft className="w-4 h-4 text-info-400 rotate-180" />
-              <div className="flex items-center gap-1 text-xs text-info-600">
-                <div className="w-2 h-2 rounded-full bg-danger-500" />
-                <span>第4步：永久删除</span>
+      <div className="bg-white rounded-lg border border-gray-200 overflow-hidden">
+        <nav className="flex -mb-px border-b border-gray-200">
+          <button
+            onClick={() => { setActiveTab('pending'); setSelectedIds([]); }}
+            className={`px-6 py-3 text-sm font-medium whitespace-nowrap transition-colors ${
+              activeTab === 'pending'
+                ? 'text-primary-600 border-b-2 border-primary-600 bg-primary-50'
+                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            待确认
+            <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${
+              activeTab === 'pending' ? 'bg-warning-100 text-warning-700' : 'bg-gray-100 text-gray-600'
+            }`}>
+              {formatNumber(pendingItems.length)}
+            </span>
+          </button>
+          <button
+            onClick={() => { setActiveTab('deleted'); setSelectedIds([]); }}
+            className={`px-6 py-3 text-sm font-medium whitespace-nowrap transition-colors ${
+              activeTab === 'deleted'
+                ? 'text-primary-600 border-b-2 border-primary-600 bg-primary-50'
+                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            已删除
+            <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${
+              activeTab === 'deleted' ? 'bg-danger-100 text-danger-700' : 'bg-gray-100 text-gray-600'
+            }`}>
+              {formatNumber(deletedItems.length)}
+            </span>
+          </button>
+          <button
+            onClick={() => { setActiveTab('restored'); setSelectedIds([]); }}
+            className={`px-6 py-3 text-sm font-medium whitespace-nowrap transition-colors ${
+              activeTab === 'restored'
+                ? 'text-primary-600 border-b-2 border-primary-600 bg-primary-50'
+                : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            已恢复
+            <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${
+              activeTab === 'restored' ? 'bg-success-100 text-success-700' : 'bg-gray-100 text-gray-600'
+            }`}>
+              {formatNumber(restoredItems.length)}
+            </span>
+          </button>
+        </nav>
+      </div>
+
+      {activeTab === 'pending' && (
+        <div className="bg-info-50 border border-info-200 rounded-lg p-4">
+          <div className="flex items-start gap-3">
+            <ShieldCheck className="w-5 h-5 text-info-600 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="font-medium text-info-800">安全处置流程</p>
+              <p className="text-sm text-info-700 mt-1">
+                待回收区的文件需要法务/行政人员二次确认后才能永久删除。
+                您可以选择恢复文件至原路径，或确认执行永久删除操作。
+                所有操作均会记录在审计日志中，点击文件行可查看完整处置时间线。
+              </p>
+              <div className="flex items-center gap-4 mt-3">
+                <div className="flex items-center gap-1 text-xs text-info-600">
+                  <div className="w-2 h-2 rounded-full bg-info-500" />
+                  <span>第1步：发现重复</span>
+                </div>
+                <ArrowLeft className="w-4 h-4 text-info-400 rotate-180" />
+                <div className="flex items-center gap-1 text-xs text-info-600">
+                  <div className="w-2 h-2 rounded-full bg-warning-500" />
+                  <span>第2步：移入待回收</span>
+                </div>
+                <ArrowLeft className="w-4 h-4 text-info-400 rotate-180" />
+                <div className="flex items-center gap-1 text-xs text-info-600">
+                  <div className="w-2 h-2 rounded-full bg-info-500" />
+                  <span>第3步：二次审核</span>
+                </div>
+                <ArrowLeft className="w-4 h-4 text-info-400 rotate-180" />
+                <div className="flex items-center gap-1 text-xs text-info-600">
+                  <div className="w-2 h-2 rounded-full bg-danger-500" />
+                  <span>第4步：永久删除</span>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {activeTab !== 'pending' && (
+        <div className={`rounded-lg p-4 border ${activeTab === 'deleted' ? 'bg-danger-50 border-danger-200' : 'bg-success-50 border-success-200'}`}>
+          <div className="flex items-start gap-3">
+            <History className={`w-5 h-5 flex-shrink-0 mt-0.5 ${activeTab === 'deleted' ? 'text-danger-600' : 'text-success-600'}`} />
+            <div>
+              <p className={`font-medium ${activeTab === 'deleted' ? 'text-danger-800' : 'text-success-800'}`}>
+                {activeTab === 'deleted' ? '已删除文件记录' : '已恢复文件记录'}
+              </p>
+              <p className={`text-sm mt-1 ${activeTab === 'deleted' ? 'text-danger-700' : 'text-success-700'}`}>
+                这里展示的是{activeTab === 'deleted' ? '已经永久删除的文件审计记录，可展开查看完整处置时间线，删除文件不可恢复。' : '已恢复至原路径的文件审计记录，可展开查看完整处置时间线。'}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="bg-white rounded-lg border border-gray-200 p-4">
         <div className="flex flex-wrap items-center gap-4">
@@ -326,8 +423,8 @@ export default function Recycle() {
 
       <div className="flex items-center justify-between">
         <div className="text-sm text-gray-600">
-          共 <span className="font-semibold text-gray-900">{formatNumber(filteredItems.length)}</span> 个待确认文件
-          {selectedIds.length > 0 && (
+          共 <span className="font-semibold text-gray-900">{formatNumber(filteredItems.length)}</span> 个{activeTab === 'pending' ? '待确认' : activeTab === 'deleted' ? '已删除' : '已恢复'}文件
+          {activeTab === 'pending' && selectedIds.length > 0 && (
             <span className="ml-4">
               已选择 <span className="font-semibold text-primary-600">{formatNumber(selectedIds.length)}</span> 个
               <span className="text-gray-500">（{formatFileSize(selectedSize)}）</span>
@@ -339,32 +436,41 @@ export default function Recycle() {
             variant="secondary"
             size="sm"
             icon={<Download className="w-4 h-4" />}
-            onClick={() => exportRecycleItems(filteredItems)}
+            onClick={() => exportRecycleItems(filteredItems.map((i: any) => ({ 
+              fileItem: i.fileItem, 
+              movedAt: (i as any).movedAt || (i as any).deletedAt || (i as any).restoredAt, 
+              movedBy: (i as any).movedBy || (i as any).deletedBy || (i as any).restoredBy, 
+              reason: i.reason 
+            })))}
           >
             导出清单
           </Button>
-          <Button
-            variant="success"
-            size="sm"
-            icon={<XCircle className="w-4 h-4" />}
-            disabled={selectedIds.length === 0}
-            onClick={handleReject}
-          >
-            恢复文件
-          </Button>
-          <Button
-            variant="danger"
-            size="sm"
-            icon={<Trash2 className="w-4 h-4" />}
-            disabled={selectedIds.length === 0}
-            onClick={handleApprove}
-          >
-            确认删除
-          </Button>
+          {activeTab === 'pending' && (
+            <>
+              <Button
+                variant="success"
+                size="sm"
+                icon={<XCircle className="w-4 h-4" />}
+                disabled={selectedIds.length === 0}
+                onClick={handleReject}
+              >
+                恢复文件
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                icon={<Trash2 className="w-4 h-4" />}
+                disabled={selectedIds.length === 0}
+                onClick={handleApprove}
+              >
+                确认删除
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
-      {selectedIds.length > 0 && (
+      {activeTab === 'pending' && selectedIds.length > 0 && (
         <div className="bg-primary-50 border border-primary-200 rounded-lg p-4 flex items-center justify-between">
           <div className="flex items-center gap-2 text-primary-700">
             <AlertTriangle className="w-5 h-5" />
@@ -387,17 +493,19 @@ export default function Recycle() {
           <table className="w-full">
             <thead className="bg-gray-50 border-b border-gray-200">
               <tr>
-                <th className="px-2 py-3 text-left w-10">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                    checked={selectedIds.length === filteredItems.length && filteredItems.length > 0}
-                    ref={(el) => {
-                      if (el) el.indeterminate = selectedIds.length > 0 && selectedIds.length < filteredItems.length;
-                    }}
-                    onChange={handleSelectAll}
-                  />
-                </th>
+                {activeTab === 'pending' && (
+                  <th className="px-2 py-3 text-left w-10">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                      checked={selectedIds.length === filteredItems.length && filteredItems.length > 0}
+                      ref={(el) => {
+                        if (el) el.indeterminate = selectedIds.length > 0 && selectedIds.length < filteredItems.length;
+                      }}
+                      onChange={handleSelectAll}
+                    />
+                  </th>
+                )}
                 <th className="px-2 py-3 text-left w-10">
                   <span className="sr-only">展开</span>
                 </th>
@@ -420,33 +528,37 @@ export default function Recycle() {
                   创建人
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  移入时间
+                  {activeTab === 'pending' ? '移入时间' : activeTab === 'deleted' ? '删除时间' : '恢复时间'}
                 </th>
                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  原因
+                  {activeTab === 'pending' ? '原因' : '处置原因'}
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  操作
-                </th>
+                {activeTab === 'pending' && (
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    操作
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {filteredItems.map((item: RecycleItem) => {
+              {filteredItems.map((item: DisplayItem) => {
                 const isExpanded = expandedIds.includes(item.id);
                 return (
                   <>
                     <tr
                       key={item.id}
-                      className={`hover:bg-gray-50 transition-colors ${selectedIds.includes(item.id) ? 'bg-primary-50' : ''}`}
+                      className={`hover:bg-gray-50 transition-colors ${activeTab === 'pending' && selectedIds.includes(item.id) ? 'bg-primary-50' : ''}`}
                     >
-                      <td className="px-2 py-3">
-                        <input
-                          type="checkbox"
-                          className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                          checked={selectedIds.includes(item.id)}
-                          onChange={() => handleSelect(item.id)}
-                        />
-                      </td>
+                      {activeTab === 'pending' && (
+                        <td className="px-2 py-3">
+                          <input
+                            type="checkbox"
+                            className="w-4 h-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                            checked={selectedIds.includes(item.id)}
+                            onChange={() => handleSelect(item.id)}
+                          />
+                        </td>
+                      )}
                       <td className="px-2 py-3">
                         <button
                           className="p-1 hover:bg-gray-100 rounded transition-colors"
@@ -466,6 +578,11 @@ export default function Recycle() {
                           <span className="text-sm font-medium text-gray-900">
                             {item.fileItem.name}
                           </span>
+                          {activeTab !== 'pending' && (
+                            <Badge variant={activeTab === 'deleted' ? 'danger' : 'success'} size="xs">
+                              {activeTab === 'deleted' ? '已删除' : '已恢复'}
+                            </Badge>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -499,53 +616,59 @@ export default function Recycle() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1 text-xs text-gray-500">
                           <Clock className="w-3 h-3" />
-                          {formatDateTime(item.movedAt)}
+                          {formatDateTime(
+                            (item as any).movedAt || (item as any).deletedAt || (item as any).restoredAt
+                          )}
                         </div>
-                        <p className="text-xs text-gray-400 mt-0.5">操作人：{item.movedBy}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">
+                          操作人：{(item as any).movedBy || (item as any).deletedBy || (item as any).restoredBy}
+                        </p>
                       </td>
                       <td className="px-4 py-3">
                         <Badge variant="warning" size="sm">
                           {item.reason}
                         </Badge>
                       </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-1">
-                          <button
-                            className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors"
-                            title="查看时间线"
-                            onClick={() => toggleExpand(item.id)}
-                          >
-                            <Eye className="w-4 h-4" />
-                          </button>
-                          <button
-                            className="p-1.5 text-success-600 hover:bg-success-50 rounded transition-colors"
-                            title="恢复文件"
-                            onClick={() => {
-                              setSelectedIds([item.id]);
-                              setActionType('restore');
-                              setShowRestoreModal(true);
-                            }}
-                          >
-                            <XCircle className="w-4 h-4" />
-                          </button>
-                          <button
-                            className="p-1.5 text-danger-600 hover:bg-danger-50 rounded transition-colors"
-                            title="确认删除"
-                            onClick={() => {
-                              setSelectedIds([item.id]);
-                              setActionType('delete');
-                              setShowDeleteModal(true);
-                              setDeleteConfirmText('');
-                            }}
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
+                      {activeTab === 'pending' && (
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1">
+                            <button
+                              className="p-1.5 text-gray-500 hover:bg-gray-100 rounded transition-colors"
+                              title="查看时间线"
+                              onClick={() => toggleExpand(item.id)}
+                            >
+                              <Eye className="w-4 h-4" />
+                            </button>
+                            <button
+                              className="p-1.5 text-success-600 hover:bg-success-50 rounded transition-colors"
+                              title="恢复文件"
+                              onClick={() => {
+                                setSelectedIds([item.id]);
+                                setActionType('restore');
+                                setShowRestoreModal(true);
+                              }}
+                            >
+                              <XCircle className="w-4 h-4" />
+                            </button>
+                            <button
+                              className="p-1.5 text-danger-600 hover:bg-danger-50 rounded transition-colors"
+                              title="确认删除"
+                              onClick={() => {
+                                setSelectedIds([item.id]);
+                                setActionType('delete');
+                                setShowDeleteModal(true);
+                                setDeleteConfirmText('');
+                              }}
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      )}
                     </tr>
                     {isExpanded && item.history && item.history.length > 0 && (
                       <tr>
-                        <td colSpan={11} className="p-0">
+                        <td colSpan={activeTab === 'pending' ? 11 : 10} className="p-0">
                           <DisposalTimeline history={item.history} />
                         </td>
                       </tr>
@@ -565,10 +688,16 @@ export default function Recycle() {
             <p className="text-gray-500">
               {searchKeyword || filterDepartment || filterSourceDisk 
                 ? '没有找到匹配的文件'
-                : '待回收区暂无文件'
+                : activeTab === 'pending' ? '待回收区暂无文件'
+                  : activeTab === 'deleted' ? '暂无已删除文件记录'
+                  : '暂无已恢复文件记录'
               }
             </p>
-            <p className="text-sm text-gray-400 mt-1">从重复文件页面移出的文件会显示在这里</p>
+            <p className="text-sm text-gray-400 mt-1">
+              {activeTab === 'pending' && '从重复文件页面移出的文件会显示在这里'}
+              {activeTab === 'deleted' && '永久删除的文件记录将保留审计追踪'}
+              {activeTab === 'restored' && '驳回删除申请后恢复的文件将显示在这里'}
+            </p>
           </div>
         )}
       </div>

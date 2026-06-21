@@ -160,13 +160,13 @@ export default function Overview() {
             <div className="flex-1">
               <p className="text-sm text-success-700">已释放空间</p>
               <p className="text-2xl font-bold text-success-800 font-mono">
-                {formatFileSize(0)}
+                {formatFileSize(overview?.totalFreedSpace || 0)}
               </p>
             </div>
             <div className="text-right">
               <p className="text-xs text-success-600">本月累计</p>
               <p className="text-lg font-semibold text-success-700 font-mono">
-                0 次清理
+                {formatNumber(overview?.totalDeletedCount || 0)} 次清理
               </p>
             </div>
           </div>

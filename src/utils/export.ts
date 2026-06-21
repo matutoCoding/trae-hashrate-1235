@@ -82,9 +82,18 @@ export function exportDepartmentReports(reports: DepartmentReport[], filename: s
     saveableSize: formatFileSize(r.saveableSize),
     saveableSizeBytes: r.saveableSize,
     fileCount: r.fileCount,
-    duplicateRate: ((r.duplicateCount / r.fileCount) * 100).toFixed(2) + '%',
+    totalFileCount: r.totalFileCount,
+    duplicateRate: (r.duplicateRate * 100).toFixed(2) + '%',
+    duplicateRateValue: (r.duplicateRate * 100).toFixed(2),
     pendingRecycleCount: r.pendingRecycleCount,
     pendingRecycleSize: formatFileSize(r.pendingRecycleSize),
+    pendingRecycleSizeBytes: r.pendingRecycleSize,
+    rectificationCount: r.rectificationCount,
+    rectificationPending: r.rectificationPending,
+    rectificationConfirmed: r.rectificationConfirmed,
+    rectificationRejected: r.rectificationRejected,
+    head: r.head,
+    headEmail: r.headEmail,
     priority: r.rank <= 3 ? '重点整改' : r.rank <= 6 ? '关注' : '正常',
   }));
 
@@ -92,7 +101,10 @@ export function exportDepartmentReports(reports: DepartmentReport[], filename: s
     { key: 'rank', label: '排名' },
     { key: 'name', label: '部门名称' },
     { key: 'priority', label: '优先级' },
-    { key: 'fileCount', label: '文件总数' },
+    { key: 'head', label: '部门负责人' },
+    { key: 'headEmail', label: '负责人邮箱' },
+    { key: 'totalFileCount', label: '文件总数' },
+    { key: 'fileCount', label: '重复文件数' },
     { key: 'duplicateCount', label: '重复文件组数' },
     { key: 'duplicateRate', label: '重复率' },
     { key: 'duplicateSize', label: '重复占用空间' },
@@ -101,6 +113,11 @@ export function exportDepartmentReports(reports: DepartmentReport[], filename: s
     { key: 'saveableSizeBytes', label: '可节省(字节)' },
     { key: 'pendingRecycleCount', label: '待处置文件数' },
     { key: 'pendingRecycleSize', label: '待处置空间' },
+    { key: 'pendingRecycleSizeBytes', label: '待处置(字节)' },
+    { key: 'rectificationCount', label: '整改清单总数' },
+    { key: 'rectificationPending', label: '待确认' },
+    { key: 'rectificationConfirmed', label: '已确认' },
+    { key: 'rectificationRejected', label: '已驳回' },
   ];
 
   exportToCSV(data, filename, columns);
